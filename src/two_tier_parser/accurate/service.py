@@ -7,7 +7,7 @@ import json
 import time
 import io
 import traceback
-from typing import Dict, Any, List
+from typing import Dict, Any
 import os
 from loguru import logger
 
@@ -42,19 +42,18 @@ def parse_pdf(pdf_bytes: bytes, filename: str) -> Dict[str, Any]:
         if gpu_available:
             backend = 'transformers'  # VLM backend (95%+ accuracy, requires GPU)
             use_vlm = True
-            logger.info(f"🚀 Using VLM backend for highest accuracy (GPU-accelerated)")
+            logger.info("🚀 Using VLM backend for highest accuracy (GPU-accelerated)")
             logger.info("Expected processing time: ~10-11 mins for 10 pages on T4")
         else:
             backend = 'pipeline'  # Pipeline backend (80-85% accuracy, CPU-only)
             use_vlm = False
-            logger.info(f"💻 No GPU detected - using pipeline backend (CPU-only, 80-85% accuracy)")
+            logger.info("💻 No GPU detected - using pipeline backend (CPU-only, 80-85% accuracy)")
             logger.info("Expected processing time: ~2-3 mins for 10 pages on CPU")
         
         # Import MinerU components
         from mineru.utils.enum_class import MakeMode, ContentType, ImageType
         from mineru.utils.pdf_image_tools import load_images_from_pdf, get_crop_img
         from mineru.version import __version__
-        import pypdfium2 as pdfium
         
         # Load images into memory for manual cropping
         logger.info(f"Loading images for {filename}...")
@@ -81,7 +80,6 @@ def parse_pdf(pdf_bytes: bytes, filename: str) -> Dict[str, Any]:
             from mineru.cli.common import do_parse
             from mineru.backend.pipeline.middle_json_mkcontent import union_make as pipeline_union_make
             import tempfile
-            import shutil
             
             # Pipeline backend requires file-based processing
             with tempfile.TemporaryDirectory() as temp_dir:

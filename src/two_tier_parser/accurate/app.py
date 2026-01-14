@@ -1,14 +1,12 @@
 """
 Accurate Parser Service - FastAPI application with MinerU.
 """
-import os
-import sys
+import asyncio
 import logging
+import os
 from concurrent.futures import ThreadPoolExecutor
-from typing import Dict, Any
 
-from fastapi import FastAPI, UploadFile, File, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, File, HTTPException, UploadFile
 
 from .models import ParseResponse, HealthResponse
 from .service import parse_pdf
@@ -97,6 +95,25 @@ async def health() -> HealthResponse:
     )
 
 
+def _sanitize_filename(filename: str) -> str:
+    """Sanitize filename to prevent path traversal attacks.
+
+    Security: User-supplied filenames can contain path traversal sequences
+    like '../' or absolute paths. This function extracts only the basename
+    and removes any potentially dangerous characters.
+    """
+    if not filename:
+        return "document.pdf"
+    # Extract basename to prevent path traversal
+    safe_name = os.path.basename(filename)
+    # Remove any remaining path separators (extra safety)
+    safe_name = safe_name.replace("/", "_").replace("\\", "_")
+    # Ensure it still ends with .pdf
+    if not safe_name.lower().endswith('.pdf'):
+        safe_name = "document.pdf"
+    return safe_name
+
+
 @app.post("/parse", response_model=ParseResponse)
 async def parse(file: UploadFile = File(...)) -> ParseResponse:
     """
@@ -112,8 +129,11 @@ async def parse(file: UploadFile = File(...)) -> ParseResponse:
     if not file.filename.lower().endswith('.pdf'):
         raise HTTPException(status_code=400, detail="Only PDF files are supported")
 
+    # SECURITY: Sanitize filename to prevent path traversal attacks
+    safe_filename = _sanitize_filename(file.filename)
+
     # Log request received
-    logger.info(f"Received parse request for: {file.filename}")
+    logger.info(f"Received parse request for: {safe_filename}")
     
     # Read file content
     try:
@@ -133,16 +153,16 @@ async def parse(file: UploadFile = File(...)) -> ParseResponse:
             executor,
             parse_pdf,
             pdf_bytes,
-            file.filename
+            safe_filename  # SECURITY: Use sanitized filename
         )
 
         # Check if result is None or contains an error
         if result is None:
-            logger.error(f"Parsing returned None for {file.filename}")
+            logger.error(f"Parsing returned None for {safe_filename}")
             raise HTTPException(status_code=500, detail="Parsing failed: No result returned")
 
         if "error" in result:
-            logger.error(f"Parsing failed for {file.filename}: {result.get('error')}")
+            logger.error(f"Parsing failed for {safe_filename}: {result.get('error')}")
             raise HTTPException(
                 status_code=500,
                 detail=f"Parsing failed: {result.get('error', 'Unknown error')}"
@@ -151,27 +171,23 @@ async def parse(file: UploadFile = File(...)) -> ParseResponse:
         # Calculate approximate response size
         import json
         response_size_mb = len(json.dumps(result)) / (1024 * 1024)
-        
+
         # Now safe to access result attributes
         logger.info(
-            f'{{"filename": "{file.filename}", "pages": {result["metadata"]["pages"]}, '
+            f'{{"filename": "{safe_filename}", "pages": {result["metadata"]["pages"]}, '
             f'"processing_time_ms": {result["metadata"]["processing_time_ms"]}, '
             f'"images": {len(result["images"])}, "tables": {len(result["tables"])}, '
             f'"formulas": {len(result["formulas"])}, "response_size_mb": {response_size_mb:.2f}}}'
         )
-        
-        logger.info(f"Sending response to client for {file.filename}")
+
+        logger.info(f"Sending response to client for {safe_filename}")
         return ParseResponse(**result)
 
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Parsing failed for {file.filename}: {e}", exc_info=True)
+        logger.error(f"Parsing failed for {safe_filename}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Parsing failed: {str(e)}")
-
-
-# Import asyncio for event loop
-import asyncio
 
 
 if __name__ == "__main__":

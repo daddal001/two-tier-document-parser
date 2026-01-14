@@ -1,32 +1,30 @@
 """Unit tests for accurate parser service."""
-import pytest
-from pathlib import Path
+import importlib.util
 import sys
+from pathlib import Path
+
+import pytest
 
 # Add src to path
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
+
+from two_tier_parser.accurate.models import (
+    FormulaData,
+    ImageData,
+    ParseResponse,
+    TableData,
+)
+from two_tier_parser.accurate.service import parse_pdf
 
 # Check if mineru is available (required for accurate parser)
 # MinerU is a git submodule, so check both installed package and submodule path
-MINERU_AVAILABLE = False
-try:
-    import mineru
-    MINERU_AVAILABLE = True
-except ImportError:
+MINERU_AVAILABLE = importlib.util.find_spec("mineru") is not None
+if not MINERU_AVAILABLE:
     # Try importing from submodule directory
-    try:
-        from pathlib import Path
-        import sys
-        mineru_path = Path(__file__).parent.parent.parent / "MinerU"
-        if mineru_path.exists():
-            sys.path.insert(0, str(mineru_path))
-            import mineru
-            MINERU_AVAILABLE = True
-    except (ImportError, Exception):
-        MINERU_AVAILABLE = False
-
-from two_tier_parser.accurate.service import parse_pdf
-from two_tier_parser.accurate.models import ParseResponse, HealthResponse, ImageData, TableData, FormulaData
+    mineru_path = Path(__file__).parent.parent.parent.parent / "MinerU"
+    if mineru_path.exists():
+        sys.path.insert(0, str(mineru_path))
+        MINERU_AVAILABLE = importlib.util.find_spec("mineru") is not None
 
 
 @pytest.mark.slow

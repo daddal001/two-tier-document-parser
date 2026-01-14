@@ -2,5 +2,6 @@ fastapi==0.104.1
 uvicorn[standard]==0.24.0
 python-multipart==0.0.6
 pymupdf4llm>=0.0.17
+pymupdf>=1.26.0  # Explicit version pin for stability
 pymupdf-layout
 pydantic==2.5.0

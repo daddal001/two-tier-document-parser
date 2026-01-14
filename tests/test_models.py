@@ -1,5 +1,4 @@
 """Tests for Pydantic models."""
-import pytest
 from pathlib import Path
 import sys
 

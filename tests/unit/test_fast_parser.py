@@ -7,7 +7,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from two_tier_parser.fast.service import parse_pdf
-from two_tier_parser.fast.models import ParseResponse, HealthResponse
+from two_tier_parser.fast.models import ParseResponse
 
 
 def test_parse_pdf_basic(sample_pdf_path):

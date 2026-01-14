@@ -1,7 +1,6 @@
 """Integration tests for API endpoints."""
 import pytest
 import requests
-from pathlib import Path
 
 
 @pytest.mark.integration
