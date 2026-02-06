@@ -69,6 +69,13 @@ dev = [
     "mypy>=1.5.0",
     "pypdf>=3.0.0",  # For creating single-page PDFs in tests
 ]
+# Optional telemetry for distributed tracing (API-only pattern)
+# API is no-op without SDK - zero overhead for users who don't need tracing
+# See: https://opentelemetry.io/docs/concepts/instrumentation/libraries/
+telemetry = [
+    "opentelemetry-api>=1.20.0",
+    "opentelemetry-instrumentation-fastapi>=0.41b0",
+]
 
 [project.urls]
 Homepage = "https://github.com/daddal001/two_tier_document_parser"

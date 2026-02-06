@@ -18,9 +18,9 @@ WORKDIR /app
 COPY pyproject.toml .
 COPY src/ src/
 
-# Install package
+# Install package with telemetry support (API-only, zero overhead without SDK)
 RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -e .[fast]
+    pip install --no-cache-dir -e ".[fast,telemetry]"
 
 # Set environment variables
 ENV PYTHON_GIL=0
@@ -34,5 +34,5 @@ EXPOSE 8004
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8004/health')"
 
-# Run application
-CMD ["python", "-m", "uvicorn", "two_tier_parser.fast.app:app", "--host", "0.0.0.0", "--port", "8004"]
+# Run application (main.py follows industry standard naming convention)
+CMD ["python", "-m", "uvicorn", "two_tier_parser.fast.main:app", "--host", "0.0.0.0", "--port", "8004"]

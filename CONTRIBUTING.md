@@ -78,16 +78,21 @@ make lint
 two_tier_document_parser/
 ├── src/
 │   └── two_tier_parser/          # Main package
+│       ├── __init__.py          # Package init with NullHandler + version
 │       ├── fast/                 # Fast parser service (PyMuPDF4LLM)
-│       │   ├── app.py           # FastAPI application
+│       │   ├── main.py          # FastAPI application (entry point)
+│       │   ├── app.py           # Backwards-compatible wrapper (deprecated)
 │       │   ├── service.py       # Parser implementation
 │       │   ├── models.py        # Pydantic schemas
-│       │   └── requirements.txt
+│       │   └── core/            # Telemetry utilities
+│       │       └── telemetry.py # OpenTelemetry (API-only pattern)
 │       ├── accurate/             # Accurate parser service (MinerU)
-│       │   ├── app.py           # FastAPI application
-│       │   ├── service.py       # Parser implementation
+│       │   ├── main.py          # FastAPI application (entry point)
+│       │   ├── app.py           # Backwards-compatible wrapper (deprecated)
+│       │   ├── service.py       # Parser implementation with tracing
 │       │   ├── models.py        # Pydantic schemas
-│       │   └── requirements.txt
+│       │   └── core/            # Telemetry utilities
+│       │       └── telemetry.py # OpenTelemetry (API-only pattern)
 │       └── common/               # Shared utilities
 │           ├── config.py        # Configuration management
 │           ├── logger.py        # Logging setup
