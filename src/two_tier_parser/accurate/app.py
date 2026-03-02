@@ -16,6 +16,8 @@ warnings.warn(
     stacklevel=2,
 )
 
-# Re-export everything from main for backwards compatibility
-from .main import *  # noqa: F401, F403
-from .main import app  # noqa: F401
+# Re-export public names from main for backwards compatibility.
+from . import main as _main
+
+__all__ = [name for name in dir(_main) if not name.startswith("_")]
+globals().update({name: getattr(_main, name) for name in __all__})
