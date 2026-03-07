@@ -1,3 +1,14 @@
+---
+title: "Two-Tier Document Parser"
+type: "reference"
+status: "approved"
+classification: "internal"
+owner: "@backend-team"
+created: "2025-11-01"
+last_updated: "2026-01-30"
+version: "1.0.0"
+---
+
 # Two-Tier Document Parser 📄🚀
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)

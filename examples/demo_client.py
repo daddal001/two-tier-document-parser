@@ -13,7 +13,6 @@ from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeEl
 from rich.syntax import Syntax
 from rich.panel import Panel
 from rich.table import Table
-from rich import print as rprint
 
 console = Console()
 
@@ -41,8 +40,8 @@ def parse_file(file_path: Path, mode: str, timeout: int = 600):
                 TimeElapsedColumn(),
                 transient=True,
             ) as progress:
-                task = progress.add_task(f"Processing ({mode})...", total=None)
-                
+                progress.add_task(f"Processing ({mode})...", total=None)
+
                 # Send request
                 response = requests.post(url, files=files, timeout=timeout)
                 

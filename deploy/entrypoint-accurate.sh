@@ -30,9 +30,9 @@ fi
 # This tells MinerU to use the pre-downloaded models instead of trying to download again
 export MINERU_MODEL_SOURCE=local
 
-# Start the application
+# Start the application (main.py follows industry standard naming convention)
 echo "🎯 Starting Uvicorn server on port 8005..."
-exec python3 -m uvicorn two_tier_parser.accurate.app:app \
+exec python3 -m uvicorn two_tier_parser.accurate.main:app \
     --host 0.0.0.0 \
     --port 8005 \
     --timeout-keep-alive 600
