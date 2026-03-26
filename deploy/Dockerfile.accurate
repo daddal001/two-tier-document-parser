@@ -47,10 +47,10 @@ COPY src/ src/
 COPY deploy/entrypoint-accurate.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-# Install our package with telemetry support (API-only, zero overhead without SDK)
+# Install our package with full telemetry (API + SDK + OTLP exporter for platform tracing)
 # Note: vLLM base image has torch/transformers, but we ensure versions via pyproject.toml or manual
 # We use --break-system-packages because we are in a container
-RUN python3 -m pip install -e ".[accurate,telemetry]" --break-system-packages
+RUN python3 -m pip install -e ".[accurate,telemetry,telemetry-sdk]" --break-system-packages
 
 # Ensure transformers version meets MinerU requirements (>=4.51.1)
 # Qwen2VLForConditionalGeneration requires transformers >= 4.51.1

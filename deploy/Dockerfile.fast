@@ -18,9 +18,9 @@ WORKDIR /app
 COPY pyproject.toml .
 COPY src/ src/
 
-# Install package with telemetry support (API-only, zero overhead without SDK)
+# Install package with full telemetry (API + SDK + OTLP exporter for platform tracing)
 RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -e ".[fast,telemetry]"
+    pip install --no-cache-dir -e ".[fast,telemetry,telemetry-sdk]"
 
 # Set environment variables
 ENV PYTHON_GIL=0

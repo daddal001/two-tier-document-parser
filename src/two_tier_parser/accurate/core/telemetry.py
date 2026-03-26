@@ -30,11 +30,15 @@ try:
 except ImportError:
     OTEL_AVAILABLE = False
     tracer = None
-    logger.debug("OpenTelemetry not installed - telemetry disabled")
+    logger.debug("OpenTelemetry not installed - telemetry disabled", extra={"service_name": "two-tier-parser"})
 
 
 def setup_telemetry(app) -> bool:
     """Initialize telemetry if available.
+
+    If the SDK is installed (telemetry-sdk extra), configures OTLP export
+    using standard OTEL_* environment variables. Without the SDK, the API
+    stubs remain no-ops (zero overhead).
 
     Args:
         app: FastAPI application instance
@@ -42,11 +46,39 @@ def setup_telemetry(app) -> bool:
     Returns:
         True if telemetry was enabled, False otherwise
     """
-    if OTEL_AVAILABLE:
-        FastAPIInstrumentor.instrument_app(app)
-        logger.info("OpenTelemetry instrumentation enabled for accurate-parser")
-        return True
-    return False
+    if not OTEL_AVAILABLE:
+        return False
+
+    # If the SDK is installed, auto-configure TracerProvider from env vars
+    # (OTEL_EXPORTER_OTLP_ENDPOINT, OTEL_SERVICE_NAME, etc.)
+    try:
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import BatchSpanProcessor
+        from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+        from opentelemetry.sdk.resources import Resource, SERVICE_NAME
+
+        import os
+        service_name = os.environ.get("OTEL_SERVICE_NAME", "accurate-parser")
+        resource = Resource.create({SERVICE_NAME: service_name})
+        provider = TracerProvider(resource=resource)
+        provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))
+        trace.set_tracer_provider(provider)
+        logger.info(
+            "OpenTelemetry SDK configured with OTLP exporter",
+            extra={"service_name": "accurate-parser", "component": "telemetry"}
+        )
+    except ImportError:
+        logger.debug(
+            "OpenTelemetry SDK not installed - using API-only (no-op) mode",
+            extra={"service_name": "accurate-parser", "component": "telemetry"}
+        )
+
+    FastAPIInstrumentor.instrument_app(app)
+    logger.info(
+        "OpenTelemetry instrumentation enabled",
+        extra={"service_name": "accurate-parser", "component": "telemetry"}
+    )
+    return True
 
 
 def get_tracer():
@@ -94,7 +126,10 @@ def traced_operation(
                         span.set_attribute(k, v)
                     else:
                         span.set_attribute(k, str(v))
-            logger.info("Starting %s", name, extra=attributes or {})
+            logger.info(
+                "Starting operation",
+                extra={"service_name": "accurate-parser", "operation": name, **(attributes or {})}
+            )
             try:
                 yield span
             except Exception as e:
@@ -102,14 +137,31 @@ def traced_operation(
                 span.set_attribute("error.type", type(e).__name__)
                 span.set_attribute("error.message", str(e))
                 span.set_attribute("error.recoverable", False)
-                logger.error("%s failed: %s", name, e, exc_info=True)
+                logger.error(
+                    "Operation failed",
+                    exc_info=True,
+                    extra={"service_name": "accurate-parser", "operation": name, "error_type": type(e).__name__, "error_message": str(e)}
+                )
                 raise
-            logger.info("Completed %s", name)
+            logger.info(
+                "Completed operation",
+                extra={"service_name": "accurate-parser", "operation": name}
+            )
     else:
-        logger.info("Starting %s", name, extra=attributes or {})
+        logger.info(
+            "Starting operation",
+            extra={"service_name": "accurate-parser", "operation": name, **(attributes or {})}
+        )
         try:
             yield None
         except Exception as e:
-            logger.error("%s failed: %s", name, e, exc_info=True)
+            logger.error(
+                "Operation failed",
+                exc_info=True,
+                extra={"service_name": "accurate-parser", "operation": name, "error_type": type(e).__name__, "error_message": str(e)}
+            )
             raise
-        logger.info("Completed %s", name)
+        logger.info(
+            "Completed operation",
+            extra={"service_name": "accurate-parser", "operation": name}
+        )

@@ -32,7 +32,10 @@ import time
 import traceback
 from typing import Any, Dict
 
+from opentelemetry import trace
+
 logger = logging.getLogger(__name__)
+tracer = trace.get_tracer("parser.accurate")
 
 # Optional OpenTelemetry tracing (API-only, no-op without SDK)
 try:
@@ -46,13 +49,23 @@ except ImportError:
 
         @contextmanager
         def _noop():
-            logger.info("Starting %s", name, extra=attributes or {})
+            logger.info(
+                "Starting operation",
+                extra={"service_name": "accurate-parser", "operation": name, **(attributes or {})}
+            )
             try:
                 yield None
             except Exception:
-                logger.error("%s failed", name, exc_info=True)
+                logger.error(
+                    "Operation failed",
+                    exc_info=True,
+                    extra={"service_name": "accurate-parser", "operation": name}
+                )
                 raise
-            logger.info("Completed %s", name)
+            logger.info(
+                "Completed operation",
+                extra={"service_name": "accurate-parser", "operation": name}
+            )
 
         return _noop()
 
@@ -76,9 +89,11 @@ def parse_pdf(pdf_bytes: bytes, filename: str) -> Dict[str, Any]:
         Dictionary with markdown, images, tables, formulas, and metadata
     """
     start_time = time.time()
+    span_ctx = tracer.start_as_current_span("parse_pdf", attributes={"document_name": filename})
+    root_span = span_ctx.__enter__()
 
-    # Get tracer for manual span creation
-    tracer = get_tracer()
+    # Get tracer for manual span creation (telemetry module)
+    telem_tracer = get_tracer()
 
     try:
         # GPU Detection
@@ -90,12 +105,18 @@ def parse_pdf(pdf_bytes: bytes, filename: str) -> Dict[str, Any]:
                 gpu_available = torch.cuda.is_available()
                 if gpu_available:
                     gpu_name = torch.cuda.get_device_name(0)
-                    logger.info("GPU detected: %s", gpu_name)
+                    logger.info(
+                        "GPU detected",
+                        extra={"service_name": "accurate-parser", "gpu_name": gpu_name}
+                    )
                     if span:
                         span.set_attribute("gpu.name", gpu_name)
                         span.set_attribute("gpu.available", True)
             except (ImportError, Exception) as e:
-                logger.info("GPU check failed: %s", e)
+                logger.info(
+                    "GPU check failed",
+                    extra={"service_name": "accurate-parser", "error_type": type(e).__name__, "error_message": str(e)}
+                )
                 if span:
                     span.set_attribute("gpu.available", False)
                     span.set_attribute("gpu.check_error", str(e))
@@ -105,13 +126,25 @@ def parse_pdf(pdf_bytes: bytes, filename: str) -> Dict[str, Any]:
             if gpu_available:
                 backend = 'transformers'  # VLM backend (95%+ accuracy, requires GPU)
                 use_vlm = True
-                logger.info("Using VLM backend for highest accuracy (GPU-accelerated)")
-                logger.info("Expected processing time: ~10-11 mins for 10 pages on T4")
+                logger.info(
+                    "Using VLM backend for highest accuracy",
+                    extra={"service_name": "accurate-parser", "parser_mode": "vlm", "gpu_accelerated": True}
+                )
+                logger.info(
+                    "Expected processing time estimate",
+                    extra={"service_name": "accurate-parser", "parser_mode": "vlm", "estimate": "~10-11 mins for 10 pages on T4"}
+                )
             else:
                 backend = 'pipeline'  # Pipeline backend (80-85% accuracy, CPU-only)
                 use_vlm = False
-                logger.info("No GPU detected - using pipeline backend (CPU-only, 80-85% accuracy)")
-                logger.info("Expected processing time: ~2-3 mins for 10 pages on CPU")
+                logger.info(
+                    "No GPU detected, using pipeline backend",
+                    extra={"service_name": "accurate-parser", "parser_mode": "pipeline", "accuracy_range": "80-85%"}
+                )
+                logger.info(
+                    "Expected processing time estimate",
+                    extra={"service_name": "accurate-parser", "parser_mode": "pipeline", "estimate": "~2-3 mins for 10 pages on CPU"}
+                )
 
             if span:
                 span.set_attribute("backend.name", backend)
@@ -126,11 +159,17 @@ def parse_pdf(pdf_bytes: bytes, filename: str) -> Dict[str, Any]:
         with traced_operation("mineru.load_images", {"file_name": filename, "image_type": "PIL"}) as span:
             images_list, pdf_doc = load_images_from_pdf(pdf_bytes, image_type=ImageType.PIL)
             page_count_from_images = len(images_list)
-            logger.info("Loaded %d page images for %s", page_count_from_images, filename)
+            logger.info(
+                "Loaded page images",
+                extra={"service_name": "accurate-parser", "page_count": page_count_from_images, "document_name": filename}
+            )
             if span:
                 span.set_attribute("pages.loaded", page_count_from_images)
 
-        logger.info("Starting MinerU processing for %s (backend: %s)", filename, backend)
+        logger.info(
+            "Starting MinerU processing",
+            extra={"service_name": "accurate-parser", "document_name": filename, "parser_mode": backend}
+        )
 
         # Process based on backend type
         if use_vlm:
@@ -150,7 +189,10 @@ def parse_pdf(pdf_bytes: bytes, filename: str) -> Dict[str, Any]:
                     backend=backend,
                     server_url=None
                 )
-                logger.info("VLM processing completed. Extracting results from middle_json...")
+                logger.info(
+                    "VLM processing completed, extracting results",
+                    extra={"service_name": "accurate-parser", "document_name": filename, "parser_mode": "vlm"}
+                )
 
                 if span:
                     pdf_info = middle_json.get("pdf_info", [])
@@ -182,7 +224,10 @@ def parse_pdf(pdf_bytes: bytes, filename: str) -> Dict[str, Any]:
                     "gpu_used": False,
                     "file_name": filename,
                 }) as span:
-                    logger.info("Running pipeline backend (layout detection + OCR)...")
+                    logger.info(
+                        "Running pipeline backend",
+                        extra={"service_name": "accurate-parser", "document_name": filename, "parser_mode": "pipeline"}
+                    )
 
                     # Run pipeline processing
                     do_parse(
@@ -205,7 +250,10 @@ def parse_pdf(pdf_bytes: bytes, filename: str) -> Dict[str, Any]:
                     with open(middle_json_path, 'r', encoding='utf-8') as f:
                         middle_json = json.load(f)
 
-                    logger.info("Pipeline processing completed. Extracting results from middle_json...")
+                    logger.info(
+                        "Pipeline processing completed, extracting results",
+                        extra={"service_name": "accurate-parser", "document_name": filename, "parser_mode": "pipeline"}
+                    )
 
                     if span:
                         pdf_info = middle_json.get("pdf_info", [])
@@ -219,13 +267,19 @@ def parse_pdf(pdf_bytes: bytes, filename: str) -> Dict[str, Any]:
                 try:
                     temp_dir_obj.cleanup()
                 except Exception as e:
-                    logger.warning("Failed to cleanup temp dir: %s", e)
+                    logger.warning(
+                        "Failed to cleanup temp dir",
+                        extra={"service_name": "accurate-parser", "error_type": type(e).__name__, "error_message": str(e)}
+                    )
 
         # Extract pdf_info from middle_json (results are in memory)
         pdf_info = middle_json.get("pdf_info", [])
         page_count = len(pdf_info)
 
-        logger.info("Found %d pages in results", page_count)
+        logger.info(
+            "Found pages in results",
+            extra={"service_name": "accurate-parser", "page_count": page_count, "document_name": filename}
+        )
 
         # Generate markdown from middle_json
         with traced_operation("mineru.union_make", {
@@ -238,7 +292,10 @@ def parse_pdf(pdf_bytes: bytes, filename: str) -> Dict[str, Any]:
                 MakeMode.MM_MD,
                 ""  # No image directory needed (images are base64 in memory)
             )
-            logger.info("Generated markdown (%d characters)", len(markdown_text))
+            logger.info(
+                "Generated markdown",
+                extra={"service_name": "accurate-parser", "markdown_length": len(markdown_text), "document_name": filename}
+            )
 
             if span:
                 span.set_attribute("markdown.length", len(markdown_text))
@@ -304,7 +361,16 @@ def parse_pdf(pdf_bytes: bytes, filename: str) -> Dict[str, Any]:
                                     })
                                     page_images += 1
                                 except Exception as e:
-                                    logger.warning("Failed to crop image on page %d: %s", page_idx, e)
+                                    logger.warning(
+                                        "Failed to crop image",
+                                        extra={
+                                            "service_name": "accurate-parser",
+                                            "page": page_idx,
+                                            "document_name": filename,
+                                            "error_type": type(e).__name__,
+                                            "error_message": str(e),
+                                        }
+                                    )
 
                         # Extract tables
                         elif span_type == ContentType.TABLE or span_type == "table":
@@ -353,18 +419,19 @@ def parse_pdf(pdf_bytes: bytes, filename: str) -> Dict[str, Any]:
         logger.info(
             "Extraction complete",
             extra={
-                "file_name": filename,
-                "pages": page_count,
+                "service_name": "accurate-parser",
+                "document_name": filename,
+                "page_count": page_count,
                 "images": len(images),
                 "tables": len(tables),
                 "formulas": len(formulas),
-                "processing_time_ms": processing_time_ms,
-                "backend": backend,
+                "duration_ms": processing_time_ms,
+                "parser_mode": backend,
                 "gpu_used": gpu_available,
             }
         )
 
-        return {
+        result = {
             "markdown": markdown_text,
             "images": images,
             "tables": tables,
@@ -380,9 +447,21 @@ def parse_pdf(pdf_bytes: bytes, filename: str) -> Dict[str, Any]:
                 "filename": filename
             }
         }
+        span_ctx.__exit__(None, None, None)
+        return result
 
     except Exception as e:
-        logger.error("MinerU parsing failed: %s", e, exc_info=True)
+        logger.error(
+            "MinerU parsing failed",
+            exc_info=True,
+            extra={
+                "service_name": "accurate-parser",
+                "document_name": filename,
+                "error_type": type(e).__name__,
+                "error_message": str(e),
+            }
+        )
+        span_ctx.__exit__(type(e), e, e.__traceback__)
         return {
             "error": str(e),
             "traceback": traceback.format_exc()

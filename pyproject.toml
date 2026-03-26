@@ -49,6 +49,7 @@ dependencies = [
     "pydantic-settings>=2.0.0",
     "rich>=13.0.0",
     "requests>=2.31.0",
+    "minio>=7.2.0",
 ]
 
 [project.optional-dependencies]
@@ -75,6 +76,16 @@ dev = [
 telemetry = [
     "opentelemetry-api>=1.20.0",
     "opentelemetry-instrumentation-fastapi>=0.41b0",
+    "opentelemetry-instrumentation-redis>=0.41b0",
+    "opentelemetry-instrumentation-asyncpg>=0.41b0",
+    "opentelemetry-instrumentation-logging>=0.41b0",
+]
+# Full SDK + exporter for platform deployments (AEGIS AI).
+# Enables actual trace export to OTEL Collector via OTLP gRPC.
+# Install with: pip install .[telemetry,telemetry-sdk]
+telemetry-sdk = [
+    "opentelemetry-sdk>=1.20.0",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.20.0",
 ]
 
 [project.urls]

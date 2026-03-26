@@ -24,8 +24,10 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 import pymupdf4llm
+from opentelemetry import trace
 
 logger = logging.getLogger(__name__)
+tracer = trace.get_tracer("parser.fast")
 
 # Optional OpenTelemetry tracing (API-only, no-op without SDK)
 try:
@@ -39,13 +41,23 @@ except ImportError:
 
         @contextmanager
         def _noop():
-            logger.debug("Starting %s", name, extra=attributes or {})
+            logger.debug(
+                "Starting operation",
+                extra={"service_name": "fast-parser", "operation": name, **(attributes or {})}
+            )
             try:
                 yield None
             except Exception:
-                logger.error("%s failed", name, exc_info=True)
+                logger.error(
+                    "Operation failed",
+                    exc_info=True,
+                    extra={"service_name": "fast-parser", "operation": name}
+                )
                 raise
-            logger.debug("Completed %s", name)
+            logger.debug(
+                "Completed operation",
+                extra={"service_name": "fast-parser", "operation": name}
+            )
 
         return _noop()
 
@@ -67,6 +79,8 @@ def parse_pdf(pdf_bytes: bytes, filename: str) -> Dict[str, Any]:
         Metadata includes 'skipped_pages' list if any pages failed to parse.
     """
     start_time = time.time()
+    parse_span_ctx = tracer.start_as_current_span("parse_pdf", attributes={"service_name": "fast-parser", "document_name": filename})
+    parse_span_ctx.__enter__()
 
     # Create temporary file for PDF processing
     with traced_operation("tempfile.create", {"file_name": filename}) as span:
@@ -86,7 +100,10 @@ def parse_pdf(pdf_bytes: bytes, filename: str) -> Dict[str, Any]:
         with traced_operation("pdf.load", {"file_name": filename}) as span:
             with pymupdf.open(tmp_path) as doc:
                 total_pages = len(doc)
-            logger.debug("PDF loaded: %d pages", total_pages)
+            logger.debug(
+                "PDF loaded",
+                extra={"service_name": "fast-parser", "page_count": total_pages, "document_name": filename}
+            )
             if span:
                 span.set_attribute("total_pages", total_pages)
 
@@ -99,7 +116,10 @@ def parse_pdf(pdf_bytes: bytes, filename: str) -> Dict[str, Any]:
                 "mode": "full_document",
             }) as span:
                 markdown_text = pymupdf4llm.to_markdown(str(tmp_path))
-                logger.info("Fast parse succeeded for %s (%d pages)", filename, total_pages)
+                logger.info(
+                    "Fast parse succeeded",
+                    extra={"service_name": "fast-parser", "document_name": filename, "page_count": total_pages}
+                )
                 if span:
                     span.set_attribute("parse_mode", "full_document")
                     span.set_attribute("markdown_length", len(markdown_text))
@@ -113,9 +133,8 @@ def parse_pdf(pdf_bytes: bytes, filename: str) -> Dict[str, Any]:
                "not a textpage" in error_msg:
 
                 logger.warning(
-                    "Fast parse failed, falling back to page-by-page: %s",
-                    error_msg[:100],
-                    extra={"file_name": filename, "error_type": type(e).__name__}
+                    "Fast parse failed, falling back to page-by-page",
+                    extra={"service_name": "fast-parser", "document_name": filename, "error_type": type(e).__name__, "error_message": error_msg[:100]}
                 )
 
                 with traced_operation("pdf.page_by_page_parse", {
@@ -154,10 +173,13 @@ def parse_pdf(pdf_bytes: bytes, filename: str) -> Dict[str, Any]:
                                         f"\n\n---\n**[Page {page_num + 1} skipped due to parsing error]**\n---\n\n"
                                     )
                                     logger.warning(
-                                        "Skipped page %d: %s",
-                                        page_num + 1,
-                                        page_error_msg[:50],
-                                        extra={"file_name": filename}
+                                        "Skipped page due to parsing error",
+                                        extra={
+                                            "service_name": "fast-parser",
+                                            "document_name": filename,
+                                            "page": page_num + 1,
+                                            "error_message": page_error_msg[:50],
+                                        }
                                     )
 
                                     if page_span:
@@ -195,19 +217,21 @@ def parse_pdf(pdf_bytes: bytes, filename: str) -> Dict[str, Any]:
             logger.warning(
                 "Parse completed with skipped pages",
                 extra={
-                    "file_name": filename,
+                    "service_name": "fast-parser",
+                    "document_name": filename,
                     "skipped_pages": skipped_pages,
                     "skipped_count": len(skipped_pages),
-                    "total_pages": total_pages,
+                    "page_count": total_pages,
                 }
             )
 
         logger.info(
             "Parse complete",
             extra={
-                "file_name": filename,
-                "pages": total_pages,
-                "processing_time_ms": processing_time_ms,
+                "service_name": "fast-parser",
+                "document_name": filename,
+                "page_count": total_pages,
+                "duration_ms": processing_time_ms,
                 "skipped_count": len(skipped_pages),
                 "markdown_length": len(markdown_text),
             }
@@ -225,9 +249,13 @@ def parse_pdf(pdf_bytes: bytes, filename: str) -> Dict[str, Any]:
                     span.set_attribute("cleanup_status", "success")
             except PermissionError:
                 # File may still be locked on Windows
-                logger.debug("Temp file cleanup deferred (file locked): %s", tmp_path)
+                logger.debug(
+                    "Temp file cleanup deferred, file locked",
+                    extra={"service_name": "fast-parser", "temp_path": str(tmp_path)}
+                )
                 if span:
                     span.set_attribute("cleanup_status", "deferred")
+        parse_span_ctx.__exit__(None, None, None)
 
 
 def parse_pdf_page_range(
@@ -257,6 +285,8 @@ def parse_pdf_page_range(
         - end_page: Actual end page used (after clamping)
     """
     start_time = time.time()
+    range_span_ctx = tracer.start_as_current_span("parse_pdf_page_range", attributes={"service_name": "fast-parser", "document_name": filename})
+    range_span_ctx.__enter__()
 
     # Create temporary file for PDF processing
     with traced_operation("tempfile.create", {"file_name": filename, "mode": "page_range"}) as span:
@@ -297,10 +327,11 @@ def parse_pdf_page_range(
             logger.info(
                 "Empty page range",
                 extra={
-                    "file_name": filename,
+                    "service_name": "fast-parser",
+                    "document_name": filename,
                     "start_page": start_page,
                     "end_page": end_page,
-                    "total_pages": total_pages,
+                    "page_count": total_pages,
                 }
             )
             return {
@@ -342,12 +373,13 @@ def parse_pdf_page_range(
         logger.info(
             "Page range parse complete",
             extra={
-                "file_name": filename,
+                "service_name": "fast-parser",
+                "document_name": filename,
                 "pages_parsed": len(pages_to_parse),
-                "total_pages": total_pages,
+                "page_count": total_pages,
                 "start_page": start_page,
                 "end_page": end_page,
-                "processing_time_ms": processing_time_ms,
+                "duration_ms": processing_time_ms,
                 "markdown_length": len(markdown_text),
             }
         )
@@ -375,6 +407,10 @@ def parse_pdf_page_range(
                 if span:
                     span.set_attribute("cleanup_status", "success")
             except PermissionError:
-                logger.debug("Temp file cleanup deferred (file locked): %s", tmp_path)
+                logger.debug(
+                    "Temp file cleanup deferred, file locked",
+                    extra={"service_name": "fast-parser", "temp_path": str(tmp_path)}
+                )
                 if span:
                     span.set_attribute("cleanup_status", "deferred")
+        range_span_ctx.__exit__(None, None, None)

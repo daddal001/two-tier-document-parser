@@ -17,6 +17,7 @@ class HealthResponse(BaseModel):
     no_gil: bool = Field(..., description="Whether Python no-GIL mode is enabled")
     parser: str = Field(default="pymupdf4llm", description="Parser library name")
     version: str = Field(default="1.0.0", description="Service version")
+    minio_connected: bool = Field(default=False, description="MinIO connectivity status")
 
 
 class PageRangeMetadata(BaseModel):
