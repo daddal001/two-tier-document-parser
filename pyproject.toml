@@ -41,9 +41,9 @@ classifiers = [
     "Framework :: FastAPI",
 ]
 dependencies = [
-    "fastapi>=0.104.0",
+    "fastapi>=0.121.2",
     "uvicorn[standard]>=0.24.0",
-    "python-multipart>=0.0.6",
+    "python-multipart>=0.0.22",
     "loguru>=0.7.2",
     "pydantic>=2.0.0",
     "pydantic-settings>=2.0.0",
@@ -59,7 +59,7 @@ fast = [
 ]
 accurate = [
     "torch>=2.0.0",
-    "transformers>=4.44.0",
+    "transformers>=4.53.0",
 ]
 dev = [
     "pytest>=7.4.0",

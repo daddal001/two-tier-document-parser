@@ -20,6 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **BREAKING:** Renamed entry points from `app.py` → `main.py` (industry standard)
 - Added backwards-compatible `app.py` wrappers with deprecation warnings
 - Updated Dockerfiles to use `main.py` entry points
+- Raised FastAPI, `python-multipart`, and `transformers` dependency floors to remove
+  known vulnerable versions from parser service manifests
 - Enhanced error handling with structured logging
 
 ### Deprecated
