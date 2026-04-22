@@ -5,8 +5,8 @@ status: "approved"
 classification: "internal"
 owner: "@backend-team"
 created: "2025-11-01"
-last_updated: "2026-01-30"
-version: "1.0.0"
+last_updated: "2026-04-16"
+version: "1.1.0"
 ---
 
 # Two-Tier Document Parser 📄🚀
@@ -151,13 +151,90 @@ graph TD
 
 **Endpoint**: `POST http://localhost:8004/parse`
 
-**Request:**
+#### Layout analysis (pymupdf-layout, ADR-0049)
+
+Fast-parser auto-activates the [PyMuPDF-Layout](https://pymupdf.io/blog/pymupdf-layout-10-faster-pdf-parsing-without-gpus) GNN for markdown structure
+recovery. Import-order-sensitive — `fast/service.py` imports `pymupdf.layout`
+**before** `pymupdf4llm`. Auto-bundled in `pymupdf4llm ≥ 0.3.0`; CPU-only,
+no GPU required. Emergency disable: `FAST_PARSER_DISABLE_LAYOUT=1`.
+
+#### Image extraction (Stage 1 + Stage 2, ADR-0049)
+
+Both `/parse` and `/parse-pages` extract images by default. Fast-parser uses
+the direct PyMuPDF API (`page.get_images(full=True)` + `doc.extract_image(xref)`)
+to sidestep [pymupdf4llm#352](https://github.com/pymupdf/pymupdf4llm/issues/352)
+where `image_path` is ignored under layout. SHA-256 content hash dedupes
+images reused across pages. OWASP ASVS V12 caps enforced.
+
+| Field | `/parse` default | `/parse-pages` default | Source |
+|---|---|---|---|
+| `extract_images` | `true` | `true` | user |
+| `image_max_count` | `500` | `50` | OWASP ASVS V12.1 |
+| `image_max_bytes` | `52428800` (50 MB) | `10485760` (10 MB) | OWASP ASVS V12.1.2 |
+| `image_max_pixels` | `50000000` (50 MP) | `50000000` | OWASP ASVS V12.2 + #1740 |
+
+Response adds `images: ImageData[]`:
+
+```json
+{
+  "image_id": "a1b2c3d4e5f6a7b8",
+  "image_base64": "<base64-encoded-bytes>",
+  "page": 0,
+  "pages": [0, 4],
+  "bbox": [120.5, 640.0, 380.2, 780.5],
+  "mime": "image/png",
+  "width": 1024,
+  "height": 768
+}
+```
+
+Caller uploads via `services/backend-document/services/document_storage.py:_store_parsed_images()`
+to `{MINIO_IMAGES_BUCKET}/{user_id}/{document_name}/parsed/images/{image_id}.{ext}`.
+Extension from RFC 2046 mime; idempotent MinIO PUT.
+
+#### Example request (JSON claim-check, preferred)
+
+```bash
+curl -X POST "http://localhost:8004/parse" \
+  -H "Content-Type: application/json" \
+  -d '{
+        "bucket": "documents",
+        "key": "alice/doc_a/original/document.pdf",
+        "filename": "document.pdf",
+        "task_id": "celery-parse-task-id",
+        "start_page": 0,
+        "extract_images": true
+      }'
+```
+
+
+
+**Request (multipart, legacy):**
 ```bash
 curl -X POST "http://localhost:8004/parse" \
   -F "file=@document.pdf"
 ```
 
-**Response:**
+**Request (JSON claim-check, preferred — also carries preemption context per ADR-0047):**
+```bash
+curl -X POST "http://localhost:8004/parse" \
+  -H "Content-Type: application/json" \
+  -d '{
+        "bucket": "documents",
+        "key": "alice/doc_a/original/document.pdf",
+        "filename": "document.pdf",
+        "task_id": "celery-parse-task-id",
+        "start_page": 0
+      }'
+```
+
+| Field | Required | Purpose |
+|-------|----------|---------|
+| `bucket`, `key`, `filename` | yes | MinIO claim-check reference |
+| `task_id` | no | Enables [ADR-0047 cooperative preemption](../../docs/architecture/decisions/0047-cooperative-preemption-for-fast-parser-contention.md). When set, parsing iterates page-by-page and checks `parse_cancel:{task_id}` between pages. |
+| `start_page` | no | 0-indexed resume cursor for previously preempted parses. |
+
+**Response (200 — normal):**
 ```json
 {
   "markdown": "# Document Title\n\nContent here...",
@@ -169,6 +246,19 @@ curl -X POST "http://localhost:8004/parse" \
   }
 }
 ```
+
+**Response (409 — Preempted, only when `task_id` was provided and the cancel flag is set between pages):**
+```json
+{
+  "detail": {
+    "reason": "preempted",
+    "last_page_parsed": 4,
+    "pages_total": 12,
+    "markdown_prefix_length": 18342
+  }
+}
+```
+The calling Celery task (`parse_full_document`) handles the 409 by RPUSHing a resume payload to `parser:deferred` with `start_page = last_page_parsed + 1`. See ADR-0047 for the full protocol.
 
 ### Accurate Parser API
 
@@ -453,6 +543,24 @@ Yes! The codebase is designed for production use with:
 - Structured logging
 - Docker deployment
 - API documentation
+- Memory lifecycle management (see below)
+
+### How does memory management work?
+
+Both parsers implement explicit resource cleanup to prevent memory leaks in long-lived workers:
+
+**Fast Parser:**
+- Uses `ProcessPoolExecutor` with `max_tasks_per_child` (env: `WORKER_MAX_TASKS`, default: 50) to recycle workers and release accumulated PyMuPDF memory
+- Passes `pymupdf.Document` objects (not path strings) to control file handle lifecycle
+- Calls `gc.collect()` before temp file cleanup
+
+**Accurate Parser:**
+- Uses `ThreadPoolExecutor` (GPU models must stay in-process — cannot use `ProcessPoolExecutor`)
+- Closes pdfium document handles (`pdf_doc.close()`) after multimodal extraction completes
+- Closes PIL crop images immediately after base64 conversion
+- Releases page PIL images after each page's extraction finishes
+- Periodic cleanup every N tasks (env: `WORKER_MAX_TASKS`, default: 50): runs `gc.collect()` + `torch.cuda.empty_cache()` to release CUDA caching allocator blocks
+- Pattern follows Meta TorchServe's worker lifecycle management adapted for thread-based executors
 
 ---
 

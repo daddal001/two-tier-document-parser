@@ -57,8 +57,21 @@ except ImportError:
 
 # ProcessPoolExecutor for concurrent parsing (PyMuPDF doesn't support threading)
 # See: https://pymupdf.readthedocs.io/en/latest/recipes-multiprocessing.html
-WORKERS = int(os.getenv("WORKERS", "2"))  # Reduced default for process overhead
-executor = ProcessPoolExecutor(max_workers=WORKERS)
+# max_tasks_per_child=50 recycles workers after 50 parse tasks to release accumulated
+# memory from PyMuPDF internal caches (Meta TorchServe pattern).
+# ADR-0049: default worker count = container vCPUs. Prior hard-coded 2 was the
+# largest single contributor to the 10× throughput gap. Respects cgroup CPU
+# limits via sched_getaffinity on Linux; falls back to os.cpu_count elsewhere.
+def _default_workers() -> int:
+    try:
+        return max(1, len(os.sched_getaffinity(0)))
+    except AttributeError:  # macOS / Windows
+        return max(1, os.cpu_count() or 2)
+
+
+WORKERS = int(os.getenv("WORKERS", str(_default_workers())))
+MAX_TASKS = int(os.getenv("WORKER_MAX_TASKS", "50"))
+executor = ProcessPoolExecutor(max_workers=WORKERS, max_tasks_per_child=MAX_TASKS)
 
 # Check if no-GIL mode is enabled
 NO_GIL = os.getenv("PYTHON_GIL") == "0"
@@ -103,11 +116,54 @@ def _sanitize_filename(filename: str) -> str:
     return safe_name
 
 
-async def _read_pdf_from_request(request: Request) -> tuple[bytes, str, str]:
+def _image_opts_from_payload(payload: dict, *, stage1: bool = False) -> dict:
+    """Extract ADR-0049 image-extraction options from a JSON request payload.
+
+    Stage 1 (/parse-pages) defaults are tighter than Stage 2 (/parse) because
+    Stage 1 is latency-critical (≤ 1.5s soft / ≤ 5s hard SLO per ADR-0047).
+    OWASP ASVS V12 + pixel-flood issue #1740 caps.
+    """
+    default_max_count = 50 if stage1 else 500
+    default_max_bytes = 10 * 1024 * 1024 if stage1 else 50 * 1024 * 1024
+    default_max_pixels = 50_000_000
+
+    extract = payload.get("extract_images", True)
+    if isinstance(extract, str):
+        extract = extract.strip().lower() in {"1", "true", "yes"}
+    try:
+        max_count = int(payload.get("image_max_count", default_max_count))
+    except (TypeError, ValueError):
+        max_count = default_max_count
+    try:
+        max_bytes = int(payload.get("image_max_bytes", default_max_bytes))
+    except (TypeError, ValueError):
+        max_bytes = default_max_bytes
+    try:
+        max_pixels = int(payload.get("image_max_pixels", default_max_pixels))
+    except (TypeError, ValueError):
+        max_pixels = default_max_pixels
+
+    return {
+        "extract_images_flag": bool(extract),
+        "image_max_count": max(0, max_count),
+        "image_max_bytes": max(0, max_bytes),
+        "image_max_pixels": max(0, max_pixels),
+    }
+
+
+async def _read_pdf_from_request(
+    request: Request,
+    *,
+    stage1: bool = False,
+) -> tuple[bytes, str, str, Optional[str], int, dict]:
     """Extract PDF bytes and filename from either JSON (claim-check) or multipart request.
 
     Returns:
-        Tuple of (pdf_bytes, safe_filename, parse_source).
+        Tuple of (pdf_bytes, safe_filename, parse_source, task_id, start_page, image_opts).
+        ``task_id`` and ``start_page`` are only populated from JSON payloads
+        (ADR-0047 preemption/resume); multipart uploads always return
+        (None, 0, <defaults>).
+        ``image_opts`` is the ADR-0049 image-extraction options dict.
     """
     content_type = request.headers.get("content-type", "")
 
@@ -122,6 +178,12 @@ async def _read_pdf_from_request(request: Request) -> tuple[bytes, str, str]:
         bucket = payload.get("bucket")
         key = payload.get("key")
         filename = payload.get("filename", "document.pdf")
+        task_id = payload.get("task_id")
+        try:
+            start_page = max(0, int(payload.get("start_page", 0)))
+        except (TypeError, ValueError):
+            start_page = 0
+        image_opts = _image_opts_from_payload(payload, stage1=stage1)
 
         if not bucket or not key:
             raise HTTPException(status_code=400, detail="JSON body must contain 'bucket' and 'key'")
@@ -135,7 +197,14 @@ async def _read_pdf_from_request(request: Request) -> tuple[bytes, str, str]:
         safe_filename = _sanitize_filename(filename)
         logger.info(
             "Claim-check parse request",
-            extra={"service_name": "fast-parser", "document_name": safe_filename, "bucket": bucket, "key": key},
+            extra={
+                "service_name": "fast-parser",
+                "document_name": safe_filename,
+                "bucket": bucket,
+                "key": key,
+                "task_id": task_id,
+                "start_page": start_page,
+            },
         )
 
         try:
@@ -154,7 +223,7 @@ async def _read_pdf_from_request(request: Request) -> tuple[bytes, str, str]:
             )
             raise HTTPException(status_code=502, detail=f"Failed to read file from storage: {type(e).__name__}")
 
-        return pdf_bytes, safe_filename, "claim-check"
+        return pdf_bytes, safe_filename, "claim-check", task_id, start_page, image_opts
 
     elif "multipart/form-data" in content_type:
         # Legacy multipart path: file uploaded directly
@@ -183,7 +252,9 @@ async def _read_pdf_from_request(request: Request) -> tuple[bytes, str, str]:
             )
             raise HTTPException(status_code=400, detail="Failed to read file")
 
-        return pdf_bytes, safe_filename, "multipart"
+        # Multipart uploads use defaults for image extraction.
+        image_opts = _image_opts_from_payload({}, stage1=stage1)
+        return pdf_bytes, safe_filename, "multipart", None, 0, image_opts
 
     else:
         raise HTTPException(
@@ -208,7 +279,7 @@ async def parse(request: Request) -> ParseResponse:
     parse_span_ctx.__enter__()
 
     try:
-        pdf_bytes, safe_filename, parse_source = await _read_pdf_from_request(request)
+        pdf_bytes, safe_filename, parse_source, task_id, start_page, image_opts = await _read_pdf_from_request(request, stage1=False)
     except HTTPException:
         parse_span_ctx.__exit__(None, None, None)
         raise
@@ -216,6 +287,10 @@ async def parse(request: Request) -> ParseResponse:
     # Set source on span
     span = trace.get_current_span()
     span.set_attribute("parse.source", parse_source)
+    span.set_attribute("parse.extract_images", image_opts["extract_images_flag"])
+    if task_id:
+        span.set_attribute("parse.task_id", task_id)
+        span.set_attribute("parse.start_page", start_page)
 
     file_size = len(pdf_bytes)
     logger.debug("File read complete", extra={"service_name": "fast-parser", "document_name": safe_filename, "size_bytes": file_size})
@@ -235,7 +310,14 @@ async def parse(request: Request) -> ParseResponse:
             executor,
             parse_pdf,
             pdf_bytes,
-            safe_filename  # SECURITY: Use sanitized filename
+            safe_filename,  # SECURITY: Use sanitized filename
+            task_id,
+            start_page,
+            0.8,  # progress_ceiling (ADR-0047 default)
+            image_opts["extract_images_flag"],
+            image_opts["image_max_count"],
+            image_opts["image_max_bytes"],
+            image_opts["image_max_pixels"],
         )
 
         # Check if result is None (shouldn't happen with fast parser, but safety check)
@@ -252,6 +334,34 @@ async def parse(request: Request) -> ParseResponse:
             raise HTTPException(
                 status_code=500,
                 detail=f"Parsing failed: {result.get('error', 'Unknown error')}"
+            )
+
+        # ADR-0047: translate preemption into HTTP 409. The Stage 2 Celery task
+        # catches this and RPUSHes a resume payload to parser:deferred.
+        if result.get("metadata", {}).get("preempted"):
+            last_page = result["metadata"].get("last_page_parsed", -1)
+            total_pages = result["metadata"].get("pages", 0)
+            logger.info(
+                "Parse preempted, returning 409",
+                extra={
+                    "service_name": "fast-parser",
+                    "document_name": safe_filename,
+                    "task_id": task_id,
+                    "last_page_parsed": last_page,
+                    "total_pages": total_pages,
+                },
+            )
+            span.set_attribute("parse.preempted", True)
+            span.set_attribute("parse.last_page_parsed", last_page)
+            parse_span_ctx.__exit__(None, None, None)
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "reason": "preempted",
+                    "last_page_parsed": last_page,
+                    "pages_total": total_pages,
+                    "markdown_prefix_length": len(result.get("markdown", "")),
+                },
             )
 
         total_time_ms = int((time.perf_counter() - request_start) * 1000)
@@ -309,9 +419,11 @@ async def parse_pages(
 
     with tracer.start_as_current_span("parse_pages", attributes={"service_name": "fast-parser", "endpoint": "/parse-pages"}) as span:
         try:
-            pdf_bytes, safe_filename, parse_source = await _read_pdf_from_request(request)
+            pdf_bytes, safe_filename, parse_source, _task_id, _start_page, image_opts = await _read_pdf_from_request(request, stage1=True)
         except HTTPException:
             raise
+
+        span.set_attribute("parse.extract_images", image_opts["extract_images_flag"])
 
         span.set_attribute("parse.source", parse_source)
 
@@ -335,6 +447,10 @@ async def parse_pages(
                 safe_filename,  # SECURITY: Use sanitized filename
                 start_page,
                 end_page,
+                image_opts["extract_images_flag"],
+                image_opts["image_max_count"],
+                image_opts["image_max_bytes"],
+                image_opts["image_max_pixels"],
             )
 
             total_time_ms = int((time.perf_counter() - request_start) * 1000)

@@ -13,8 +13,10 @@ Observability:
 - MinerU operations wrapped with tracing spans
 """
 import asyncio
+import gc
 import logging
 import os
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
@@ -57,8 +59,45 @@ except ImportError:
     )
 
 # ThreadPoolExecutor for concurrent parsing
+# Cannot use ProcessPoolExecutor because GPU models (PyTorch/MinerU) must stay in-process.
+# Instead, periodic gc.collect() + torch.cuda.empty_cache() reclaims accumulated memory.
 WORKERS = int(os.getenv("WORKERS", "2"))
+MAX_TASKS_BEFORE_CLEANUP = int(os.getenv("WORKER_MAX_TASKS", "50"))
 executor = ThreadPoolExecutor(max_workers=WORKERS)
+
+# Task counter for periodic memory cleanup (thread-safe)
+_task_counter = 0
+_task_counter_lock = threading.Lock()
+
+
+def _parse_pdf_with_cleanup(pdf_bytes: bytes, filename: str) -> dict:
+    """Wrapper around parse_pdf that triggers periodic GC and CUDA cache cleanup.
+
+    Every WORKER_MAX_TASKS requests, runs gc.collect() and torch.cuda.empty_cache()
+    to release accumulated memory from PIL images, pdfium handles, and CUDA caches.
+    Follows Meta TorchServe's worker recycling pattern adapted for ThreadPoolExecutor.
+    """
+    global _task_counter
+    try:
+        return parse_pdf(pdf_bytes, filename)
+    finally:
+        with _task_counter_lock:
+            _task_counter += 1
+            if _task_counter >= MAX_TASKS_BEFORE_CLEANUP:
+                _task_counter = 0
+                logger.info(
+                    "Periodic memory cleanup after %d tasks",
+                    MAX_TASKS_BEFORE_CLEANUP,
+                    extra={"service_name": "accurate-parser", "component": "memory"}
+                )
+                gc.collect()
+                try:
+                    import torch
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                except (ImportError, Exception):
+                    pass
+
 
 # Check GPU availability
 try:
@@ -262,7 +301,7 @@ async def parse(file: UploadFile = File(...)) -> ParseResponse:
 
         result = await loop.run_in_executor(
             executor,
-            parse_pdf,
+            _parse_pdf_with_cleanup,
             pdf_bytes,
             safe_filename  # SECURITY: Use sanitized filename
         )

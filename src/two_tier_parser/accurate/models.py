@@ -6,11 +6,16 @@ from pydantic import BaseModel, Field
 
 
 class ImageData(BaseModel):
-    """Model for extracted images."""
-    image_id: str = Field(..., description="Unique image identifier")
-    image_base64: str = Field(..., description="Base64-encoded PNG image")
-    page: int = Field(..., description="Page number where image was found")
-    bbox: Optional[List[float]] = Field(None, description="Bounding box [x0, y0, x1, y1]")
+    """Model for extracted images (ADR-0049 unified shape — fast + accurate tiers)."""
+    image_id: str = Field(..., description="First 16 chars of SHA-256 of image bytes")
+    image_base64: str = Field(..., description="Base64-encoded image bytes")
+    page: int = Field(..., description="First page where image appears")
+    bbox: Optional[List[float]] = Field(None, description="[x0, y0, x1, y1]; None for masked/XObject images")
+    # ADR-0049 additions — additive, backwards-compatible.
+    pages: Optional[List[int]] = Field(default=None, description="All pages where this deduplicated image appears (ADR-0049)")
+    mime: Optional[str] = Field(default=None, description="RFC 2046 media type, e.g. 'image/png'")
+    width: Optional[int] = Field(default=None, description="Image width in pixels")
+    height: Optional[int] = Field(default=None, description="Image height in pixels")
 
 
 class TableData(BaseModel):

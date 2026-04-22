@@ -43,6 +43,7 @@ classifiers = [
 dependencies = [
     "fastapi>=0.121.2",
     "uvicorn[standard]>=0.24.0",
+    "gunicorn>=22.0.0",
     "python-multipart>=0.0.22",
     "loguru>=0.7.2",
     "pydantic>=2.0.0",
@@ -53,9 +54,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# ADR-0049: pymupdf4llm>=0.3.0 auto-bundles pymupdf-layout (GNN layout analysis).
 fast = [
-    "pymupdf4llm",
-    "pymupdf",
+    "pymupdf4llm>=0.3.0",
+    "pymupdf>=1.26",
 ]
 accurate = [
     "torch>=2.0.0",

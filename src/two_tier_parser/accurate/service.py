@@ -24,6 +24,7 @@ Span hierarchy:
             │   └── formula.extract[N_M]
 """
 import base64
+import gc
 import io
 import json
 import logging
@@ -94,6 +95,10 @@ def parse_pdf(pdf_bytes: bytes, filename: str) -> Dict[str, Any]:
 
     # Get tracer for manual span creation (telemetry module)
     telem_tracer = get_tracer()
+
+    # Initialize for safe cleanup in finally block (CWE-772 mitigation)
+    pdf_doc = None
+    images_list = None
 
     try:
         # GPU Detection
@@ -303,8 +308,11 @@ def parse_pdf(pdf_bytes: bytes, filename: str) -> Dict[str, Any]:
         # Helper to convert PIL image to base64
         def pil_to_base64(img):
             buffered = io.BytesIO()
-            img.save(buffered, format="PNG")
-            return base64.b64encode(buffered.getvalue()).decode('utf-8')
+            try:
+                img.save(buffered, format="PNG")
+                return base64.b64encode(buffered.getvalue()).decode('utf-8')
+            finally:
+                buffered.close()
 
         # Helper for recursive block traversal
         def _traverse_blocks(blocks):
@@ -350,6 +358,7 @@ def parse_pdf(pdf_bytes: bytes, filename: str) -> Dict[str, Any]:
                         if span_type == ContentType.IMAGE or span_type == "image":
                             bbox = span_data.get("bbox", [])
                             if bbox:
+                                crop = None
                                 try:
                                     crop = get_crop_img(bbox, page_pil_img, scale)
                                     img_b64 = pil_to_base64(crop)
@@ -371,6 +380,13 @@ def parse_pdf(pdf_bytes: bytes, filename: str) -> Dict[str, Any]:
                                             "error_message": str(e),
                                         }
                                     )
+                                finally:
+                                    # Close crop PIL image after base64 conversion
+                                    if crop is not None:
+                                        try:
+                                            crop.close()
+                                        except Exception:
+                                            pass
 
                         # Extract tables
                         elif span_type == ContentType.TABLE or span_type == "table":
@@ -404,6 +420,14 @@ def parse_pdf(pdf_bytes: bytes, filename: str) -> Dict[str, Any]:
                                 })
                                 page_formulas += 1
 
+                    # Close page PIL image — no longer needed after all crops extracted
+                    if page_pil_img is not None:
+                        try:
+                            page_pil_img.close()
+                        except Exception:
+                            pass
+                        images_list[page_idx]["img_pil"] = None
+
                     if page_span:
                         page_span.set_attribute("images.extracted", page_images)
                         page_span.set_attribute("tables.extracted", page_tables)
@@ -413,6 +437,18 @@ def parse_pdf(pdf_bytes: bytes, filename: str) -> Dict[str, Any]:
                 extraction_span.set_attribute("total.images", len(images))
                 extraction_span.set_attribute("total.tables", len(tables))
                 extraction_span.set_attribute("total.formulas", len(formulas))
+
+        # Release pdfium handle and large intermediate objects (CWE-772, CWE-401)
+        # pdf_doc holds an open pdfium document; images_list holds all page PIL images.
+        # Both are no longer needed after multimodal extraction completes.
+        if pdf_doc is not None:
+            try:
+                pdf_doc.close()
+            except Exception:
+                pass
+            pdf_doc = None
+        images_list = None
+        gc.collect()
 
         processing_time_ms = int((time.time() - start_time) * 1000)
 
@@ -451,6 +487,16 @@ def parse_pdf(pdf_bytes: bytes, filename: str) -> Dict[str, Any]:
         return result
 
     except Exception as e:
+        # Release resources on error path (CWE-772)
+        if pdf_doc is not None:
+            try:
+                pdf_doc.close()
+            except Exception:
+                pass
+            pdf_doc = None
+        images_list = None
+        gc.collect()
+
         logger.error(
             "MinerU parsing failed",
             exc_info=True,
