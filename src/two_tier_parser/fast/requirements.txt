@@ -5,3 +5,6 @@ pymupdf4llm>=0.0.17
 pymupdf>=1.26.0  # Explicit version pin for stability
 pymupdf-layout
 pydantic==2.5.0
+# ADR-0056: pages_executor queue-depth + parse-pages latency metrics.
+# Defensive import in main.py — service still boots if the wheel is absent.
+prometheus_client>=0.20.0

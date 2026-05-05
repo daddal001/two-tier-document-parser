@@ -7,6 +7,7 @@ Observability:
 - OpenTelemetry API-only instrumentation (no-op without SDK)
 - Structured JSON logging with NullHandler fallback
 - Zero overhead for users who don't need tracing
+- prometheus_client metrics exposed at /metrics (gauge + histogram per ADR-0056)
 """
 import asyncio
 import json
@@ -17,7 +18,49 @@ from concurrent.futures import ProcessPoolExecutor
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.responses import Response
 from opentelemetry import trace
+
+# Prometheus client is optional (defence-in-depth: never crash startup if the
+# package is missing in a particular build). Per ADR-0056 we publish two
+# metrics: `pages_executor_queue_depth` (Gauge) and `parse_pages_total_ms_seconds`
+# (Histogram). Falls back to no-op stand-ins so the route logic stays clean.
+try:
+    from prometheus_client import (
+        CONTENT_TYPE_LATEST,
+        CollectorRegistry,
+        Gauge,
+        Histogram,
+        generate_latest,
+    )
+
+    _PROMETHEUS_REGISTRY = CollectorRegistry()
+    _PROM_OK = True
+except ImportError:  # pragma: no cover - exercised only on stripped builds
+    _PROMETHEUS_REGISTRY = None
+    _PROM_OK = False
+
+    class _NoopMetric:  # noqa: D401 - shim
+        def labels(self, *a, **kw):
+            return self
+
+        def inc(self, *a, **kw):
+            return None
+
+        def dec(self, *a, **kw):
+            return None
+
+        def set(self, *a, **kw):
+            return None
+
+        def observe(self, *a, **kw):
+            return None
+
+    Gauge = Histogram = lambda *a, **kw: _NoopMetric()  # type: ignore[assignment]
+    CONTENT_TYPE_LATEST = "text/plain; version=0.0.4"
+
+    def generate_latest(_registry=None):  # type: ignore[no-redef]
+        return b""
 
 from .models import ParseResponse, HealthResponse, PageRangeParseResponse
 from .service import parse_pdf, parse_pdf_page_range
@@ -73,18 +116,93 @@ WORKERS = int(os.getenv("WORKERS", str(_default_workers())))
 MAX_TASKS = int(os.getenv("WORKER_MAX_TASKS", "50"))
 executor = ProcessPoolExecutor(max_workers=WORKERS, max_tasks_per_child=MAX_TASKS)
 
+# ADR-0056: dedicated pool for the latency-sensitive `/parse-pages` route.
+# Eliminates priority inversion against multi-minute `/parse` calls on the
+# shared `executor`. Sized at half the shared pool (floor 2) so we keep
+# headroom for concurrent /parse-pages bursts without starving /parse.
+PAGES_WORKERS = max(2, WORKERS // 2)
+pages_executor = ProcessPoolExecutor(
+    max_workers=PAGES_WORKERS,
+    max_tasks_per_child=MAX_TASKS,
+)
+
+# ADR-0056 backpressure threshold: 503 when queue depth > BACKPRESSURE_FACTOR × workers.
+PAGES_BACKPRESSURE_FACTOR = int(os.getenv("PAGES_BACKPRESSURE_FACTOR", "2"))
+
+# Prometheus metrics for ADR-0056. Names match docs/OBSERVABILITY.md alert rules.
+if _PROM_OK:
+    PAGES_EXECUTOR_QUEUE_DEPTH = Gauge(
+        "pages_executor_queue_depth",
+        "Current pending-work-item count for the /parse-pages dedicated ProcessPoolExecutor (ADR-0056).",
+        registry=_PROMETHEUS_REGISTRY,
+    )
+    PARSE_PAGES_TOTAL_MS = Histogram(
+        "parse_pages_total_ms_seconds",
+        "End-to-end wall-clock latency of /parse-pages, route-handler entry → return.",
+        registry=_PROMETHEUS_REGISTRY,
+        buckets=(0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0),
+    )
+    PARSE_PAGES_BACKPRESSURE_503 = Gauge(
+        "parse_pages_backpressure_503_total",
+        "Cumulative count of /parse-pages requests rejected with HTTP 503 due to pool saturation.",
+        registry=_PROMETHEUS_REGISTRY,
+    )
+else:  # pragma: no cover
+    PAGES_EXECUTOR_QUEUE_DEPTH = Gauge()
+    PARSE_PAGES_TOTAL_MS = Histogram()
+    PARSE_PAGES_BACKPRESSURE_503 = Gauge()
+
+
+def _pages_executor_queue_depth() -> int:
+    """Read pending-work-item count from the dedicated `/parse-pages` pool.
+
+    `_pending_work_items` is a private CPython attribute used by `concurrent.futures`
+    internally; ADR-0056 wraps it in a try/except so backpressure fails *open*
+    (never blocks legitimate traffic) if a future Python release renames or
+    removes it. Worst case: the route falls back to the timeout path that
+    existed before this ADR — no regression.
+    """
+    try:
+        return len(pages_executor._pending_work_items)  # type: ignore[attr-defined]
+    except AttributeError:
+        return 0
+
+
 # Check if no-GIL mode is enabled
 NO_GIL = os.getenv("PYTHON_GIL") == "0"
 
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    """Clean up process pool on shutdown."""
+    """Clean up both process pools on shutdown (ADR-0056)."""
     logger.info(
-        "Shutting down, cleaning up process pool",
-        extra={"service_name": "fast-parser", "component": "shutdown"}
+        "Shutting down, cleaning up process pools",
+        extra={
+            "service_name": "fast-parser",
+            "component": "shutdown",
+            "executor_workers": WORKERS,
+            "pages_executor_workers": PAGES_WORKERS,
+        },
     )
     executor.shutdown(wait=True)
+    pages_executor.shutdown(wait=True)
+
+
+@app.get("/metrics")
+async def metrics() -> Response:
+    """Prometheus scrape endpoint (ADR-0056).
+
+    Exposes `pages_executor_queue_depth`, `parse_pages_total_ms_seconds`, and
+    `parse_pages_backpressure_503_total`. Returns an empty body when
+    `prometheus_client` is unavailable so scrapers see HTTP 200, not 5xx.
+    """
+    # Refresh the gauge on every scrape so we always publish a current
+    # snapshot even if the route hasn't been called recently.
+    PAGES_EXECUTOR_QUEUE_DEPTH.set(_pages_executor_queue_depth())
+    return Response(
+        content=generate_latest(_PROMETHEUS_REGISTRY) if _PROM_OK else b"",
+        media_type=CONTENT_TYPE_LATEST,
+    )
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -418,6 +536,34 @@ async def parse_pages(
     request_start = time.perf_counter()
 
     with tracer.start_as_current_span("parse_pages", attributes={"service_name": "fast-parser", "endpoint": "/parse-pages"}) as span:
+        # ADR-0056 backpressure: refuse fast and let backend-document fall
+        # through to its 0-byte sentinel branch instead of holding a 60s
+        # client connection that would time out anyway. Threshold is sampled
+        # *before* PDF read so we don't waste MinIO bandwidth on a request
+        # we're about to reject.
+        queue_depth = _pages_executor_queue_depth()
+        PAGES_EXECUTOR_QUEUE_DEPTH.set(queue_depth)
+        backpressure_limit = PAGES_BACKPRESSURE_FACTOR * PAGES_WORKERS
+        if queue_depth > backpressure_limit:
+            PARSE_PAGES_BACKPRESSURE_503.inc()
+            span.set_attribute("parse.backpressure", True)
+            span.set_attribute("pages_executor.queue_depth", queue_depth)
+            span.set_attribute("pages_executor.backpressure_limit", backpressure_limit)
+            logger.warning(
+                "Rejecting /parse-pages with 503: pool saturated",
+                extra={
+                    "service_name": "fast-parser",
+                    "component": "backpressure",
+                    "pages_executor_queue_depth": queue_depth,
+                    "pages_executor_workers": PAGES_WORKERS,
+                    "backpressure_limit": backpressure_limit,
+                },
+            )
+            raise HTTPException(
+                status_code=503,
+                detail="parse_pages_pool_saturated",
+            )
+
         try:
             pdf_bytes, safe_filename, parse_source, _task_id, _start_page, image_opts = await _read_pdf_from_request(request, stage1=True)
         except HTTPException:
@@ -426,22 +572,31 @@ async def parse_pages(
         span.set_attribute("parse.extract_images", image_opts["extract_images_flag"])
 
         span.set_attribute("parse.source", parse_source)
+        span.set_attribute("pages_executor.queue_depth", queue_depth)
 
         file_size = len(pdf_bytes)
         logger.info(
             "Page range parse request",
-            extra={"service_name": "fast-parser", "document_name": safe_filename, "start_page": start_page, "end_page": end_page}
+            extra={
+                "service_name": "fast-parser",
+                "document_name": safe_filename,
+                "start_page": start_page,
+                "end_page": end_page,
+                "pages_executor_queue_depth": queue_depth,
+            },
         )
 
         # Validate file size (100MB limit)
         if file_size > 100 * 1024 * 1024:
             raise HTTPException(status_code=413, detail="File too large (max 100MB)")
 
-        # Parse PDF page range in process pool
+        # ADR-0056: submit to the dedicated `pages_executor`, not the shared
+        # `executor`. Refresh queue-depth after submit so the gauge reflects
+        # the new pending count for any concurrent scrape.
         try:
             loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(
-                executor,
+            future = loop.run_in_executor(
+                pages_executor,
                 parse_pdf_page_range,
                 pdf_bytes,
                 safe_filename,  # SECURITY: Use sanitized filename
@@ -452,8 +607,15 @@ async def parse_pages(
                 image_opts["image_max_bytes"],
                 image_opts["image_max_pixels"],
             )
+            PAGES_EXECUTOR_QUEUE_DEPTH.set(_pages_executor_queue_depth())
+            result = await future
 
-            total_time_ms = int((time.perf_counter() - request_start) * 1000)
+            total_time_s = time.perf_counter() - request_start
+            total_time_ms = int(total_time_s * 1000)
+            PARSE_PAGES_TOTAL_MS.observe(total_time_s)
+            # Refresh after completion so a low-traffic scrape sees the
+            # post-completion depth, not the stale pre-submit value.
+            PAGES_EXECUTOR_QUEUE_DEPTH.set(_pages_executor_queue_depth())
 
             logger.info(
                 "Page range parse complete",
@@ -467,6 +629,7 @@ async def parse_pages(
                     "end_page": result["metadata"]["end_page"],
                     "parse_time_ms": result["metadata"]["processing_time_ms"],
                     "total_time_ms": total_time_ms,
+                    "pages_executor_queue_depth_at_submit": queue_depth,
                 }
             )
 

@@ -5,8 +5,8 @@ status: "approved"
 classification: "internal"
 owner: "@backend-team"
 created: "2025-11-01"
-last_updated: "2026-04-16"
-version: "1.1.0"
+last_updated: "2026-05-05"
+version: "1.2.0"
 ---
 
 # Two-Tier Document Parser 📄🚀
@@ -550,9 +550,56 @@ Yes! The codebase is designed for production use with:
 Both parsers implement explicit resource cleanup to prevent memory leaks in long-lived workers:
 
 **Fast Parser:**
-- Uses `ProcessPoolExecutor` with `max_tasks_per_child` (env: `WORKER_MAX_TASKS`, default: 50) to recycle workers and release accumulated PyMuPDF memory
-- Passes `pymupdf.Document` objects (not path strings) to control file handle lifecycle
-- Calls `gc.collect()` before temp file cleanup
+- Uses **two** `ProcessPoolExecutor` pools (ADR-0056) to eliminate priority
+  inversion between the latency-sensitive `/parse-pages` route and the
+  long-running `/parse` route:
+  - `executor` — full-document `/parse`, `WORKERS` workers
+    (= container vCPUs by default per ADR-0049).
+  - `pages_executor` — partial `/parse-pages`,
+    `max(2, WORKERS // 2)` workers.
+- Both pools recycle worker processes via `max_tasks_per_child` (env:
+  `WORKER_MAX_TASKS`, default 50) to release accumulated PyMuPDF memory.
+- Passes `pymupdf.Document` objects (not path strings) to control file handle lifecycle.
+- Calls `gc.collect()` before temp file cleanup.
+
+#### `/parse-pages` pool isolation, backpressure, metrics (ADR-0056)
+
+`/parse-pages` is Stage 1 of the [ADR-004 two-stage pipeline](../../docs/architecture/decisions/0004-use-celery-for-async-document-parsing.md)
+and runs under a strict producer-side ceiling
+(`PARSER_PARTIAL_TIMEOUT_HARD=60s` in `backend-document`). When `/parse-pages`
+shared a pool with `/parse`, four concurrent multi-minute `/parse` calls
+could trivially queue every `/parse-pages` request behind them — a textbook
+priority inversion. The 2026-04-24 submodule bump (`f5b4192`) added default
+image extraction on `/parse`, raised average pool occupancy, and pushed the
+inversion past the producer timeout.
+
+| Surface | Behaviour |
+|---------|-----------|
+| **Dedicated pool** | `pages_executor = ProcessPoolExecutor(max_workers=max(2, WORKERS // 2), max_tasks_per_child=MAX_TASKS)` declared at `fast/main.py`; only `/parse-pages` submits to it. |
+| **Backpressure (HTTP 503)** | When `len(pages_executor._pending_work_items) > PAGES_BACKPRESSURE_FACTOR × max_workers` (default 2×), `/parse-pages` returns `503 parse_pages_pool_saturated` immediately. `_pending_work_items` is a private CPython attribute wrapped in `try/except AttributeError` so the check fails *open* across versions. |
+| **Producer fall-through** | A 503 hands control back to `backend-document`, which writes the 0-byte `parsed/partial/content.md` sentinel (see `services/backend-document/README.md` § "Partial-parse sentinel contract") instead of holding the full 60 s connection. |
+| **Cooperative preemption** | ADR-0047 yield-at-page-boundary is **kept** as defence-in-depth on the shared `executor`. ADR-0056 makes structural isolation the primary mechanism; cooperative preemption is no longer the only line of defence. |
+
+Prometheus metrics exposed at `/metrics` (defensive `prometheus_client`
+import — service still boots if the wheel is absent in a stripped build):
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `pages_executor_queue_depth` | Gauge | Pending-work-item count for `pages_executor`; the **leading indicator** of priority-inversion regression. Sampled at submit time, on completion, and on every `/metrics` scrape. |
+| `parse_pages_total_ms_seconds` | Histogram | End-to-end wall-clock latency at the `/parse-pages` route handler (entry → return). Buckets: 50 ms → 60 s. |
+| `parse_pages_backpressure_503_total` | Gauge (cumulative count) | Number of requests rejected with HTTP 503 due to pool saturation; rises when the inversion threshold is crossed. |
+
+> **References:**
+> - [ADR-0056: Pool Isolation for `/parse-pages` — Dedicated `pages_executor`](../../docs/architecture/decisions/0056-pages-executor-pool-isolation.md)
+> - [ADR-0047: Cooperative Preemption for Fast-Parser Contention](../../docs/architecture/decisions/0047-cooperative-preemption-for-fast-parser-contention.md)
+> - [ADR-0049: Fast-Parser PyMuPDF-Layout and Unified Image Extraction](../../docs/architecture/decisions/0049-fast-parser-layout-and-image-extraction.md)
+>
+> **Note for submodule maintainers:** this README lives in the
+> `two_tier_document_parser` submodule. The ADR cross-links above resolve
+> when this file is read inside the parent `aegis-ai-geofront` repository
+> (which carries the `docs/architecture/decisions/` tree). The actual git
+> workflow for this change is: edit the file in place; the parent repo's
+> author handles the submodule PR + pointer bump separately.
 
 **Accurate Parser:**
 - Uses `ThreadPoolExecutor` (GPU models must stay in-process — cannot use `ProcessPoolExecutor`)
