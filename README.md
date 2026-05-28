@@ -535,6 +535,15 @@ accurate-parser:
 - **Fast Parser**: Scale horizontally (multiple containers) since it's CPU-bound
 - **Accurate Parser**: Scale vertically (better GPU) or use multiple GPU instances
 
+### How is the Fast Parser deployed on Kubernetes (GKE Autopilot)?
+
+The deployment manifest lives in the parent repository at `infra/deployment/k8s/apps/fast-parser/deployment.yaml`. Two scheduling-tier details are worth knowing if you're calling Fast Parser from another service:
+
+- **Rollouts use `maxSurge: 0 / maxUnavailable: 1`** instead of the default `maxSurge: 1 / maxUnavailable: 0`. The old pod is fully terminated before the new one is scheduled, so a deploy produces a brief gap (bounded by `progressDeadlineSeconds: 120`) rather than a transient second pod. This was deliberately chosen because on a memory-saturated GKE Autopilot cluster the second "surge" pod has nowhere to land and dies as a `ContainerStatusUnknown` ghost. Stage-1 callers (`/parse-pages`) absorb the gap via retry-with-jitter (ADR-0004 amendment); Stage-2 callers (`/parse`) absorb it via cooperative preemption (ADR-0047). If you are writing a new client, make sure your call site has at least one retry with backoff for transient 5xx / network errors.
+- **Pods run under `priorityClassName: aegis-application-high`** (`value: 1000000`, `preemptionPolicy: Never`). This makes Fast Parser the last to be preempted under admission contention with higher-priority pods, but it does **not** preempt its own siblings. The pattern mirrors Google Borg's no-intra-tier-preemption rule (Tirmazi et al., EuroSys 2020). Under sustained cluster-wide memory pressure Fast Parser queues rather than evicts, and Autopilot scales the node pool in response — the old pod keeps serving while the new one waits.
+
+Full design context, root-cause history, and verification commands are in [ADR-0049 amendment 2026-05-28](../../docs/architecture/decisions/0049-fast-parser-layout-and-image-extraction.md) and the *Pod Priority and Preemption* subsection of [`docs/deployment/GKE.md`](../../docs/deployment/GKE.md).
+
 ### Is this production-ready?
 
 Yes! The codebase is designed for production use with:
