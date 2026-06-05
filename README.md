@@ -598,27 +598,6 @@ import — service still boots if the wheel is absent in a stripped build):
 | `parse_pages_total_ms_seconds` | Histogram | End-to-end wall-clock latency at the `/parse-pages` route handler (entry → return). Buckets: 50 ms → 60 s. |
 | `parse_pages_backpressure_503_total` | Gauge (cumulative count) | Number of requests rejected with HTTP 503 due to pool saturation; rises when the inversion threshold is crossed. |
 
-> **References:**
-> - [ADR-0056: Pool Isolation for `/parse-pages` — Dedicated `pages_executor`](../../docs/architecture/decisions/0056-pages-executor-pool-isolation.md)
-> - [ADR-0047: Cooperative Preemption for Fast-Parser Contention](../../docs/architecture/decisions/0047-cooperative-preemption-for-fast-parser-contention.md)
-> - [ADR-0049: Fast-Parser PyMuPDF-Layout and Unified Image Extraction](../../docs/architecture/decisions/0049-fast-parser-layout-and-image-extraction.md)
->
-> **Note for submodule maintainers:** this README lives in the
-> `two_tier_document_parser` submodule. The ADR cross-links above resolve
-> when this file is read inside the parent `aegis-ai-geofront` repository
-> (which carries the `docs/architecture/decisions/` tree). The actual git
-> workflow for this change is: edit the file in place; the parent repo's
-> author handles the submodule PR + pointer bump separately.
-
-**Accurate Parser:**
-- Uses `ThreadPoolExecutor` (GPU models must stay in-process — cannot use `ProcessPoolExecutor`)
-- Closes pdfium document handles (`pdf_doc.close()`) after multimodal extraction completes
-- Closes PIL crop images immediately after base64 conversion
-- Releases page PIL images after each page's extraction finishes
-- Periodic cleanup every N tasks (env: `WORKER_MAX_TASKS`, default: 50): runs `gc.collect()` + `torch.cuda.empty_cache()` to release CUDA caching allocator blocks
-- Pattern follows Meta TorchServe's worker lifecycle management adapted for thread-based executors
-
----
 
 ## 🛠️ Troubleshooting
 
