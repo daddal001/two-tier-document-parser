@@ -133,6 +133,15 @@ except ImportError:
 # Prometheus + caller can alert on runaway-image PDFs.
 IMAGE_TRUNCATION_REASONS = {"count", "bytes", "pixels"}
 
+# Per-document wall-clock deadline for the preemptable (Stage-2) page loop. A
+# pathological scanned PDF can otherwise consume the caller's entire HTTP timeout
+# page-by-page with no terminal state. This bounds the loop BETWEEN pages (the C
+# call within a single page is not interruptible) and returns the partial markdown
+# with HTTP 200, so the backend records partial content instead of timing out.
+# Set comfortably under backend-document's PARSER_TIMEOUT_MAX_S (1800s) so the
+# parser returns first. 0 / negative disables the deadline.
+FAST_PARSER_WALL_DEADLINE_S = float(os.getenv("FAST_PARSER_WALL_DEADLINE_S", "1500"))
+
 
 def extract_images(
     doc,
@@ -323,8 +332,30 @@ def parse_pdf(
                 "start_page": start_page,
             }) as preempt_span:
                 markdown_parts = []
+                deadline_truncated = False
                 effective_start = max(0, min(start_page, total_pages))
                 for page_num in range(effective_start, total_pages):
+                    # Wall-clock deadline (between-pages): bound a runaway many-page
+                    # parse so it can't burn the caller's whole HTTP timeout with no
+                    # result. Returns the partial markdown via the normal HTTP 200 path
+                    # (NOT the 409 preemption path, which would re-enqueue and loop).
+                    if (
+                        FAST_PARSER_WALL_DEADLINE_S > 0
+                        and (time.time() - start_time) > FAST_PARSER_WALL_DEADLINE_S
+                    ):
+                        deadline_truncated = True
+                        logger.warning(
+                            "Parse wall-clock deadline exceeded; returning partial markdown",
+                            extra={
+                                "service_name": "fast-parser",
+                                "document_name": filename,
+                                "task_id": task_id,
+                                "last_page_parsed": last_page_parsed,
+                                "total_pages": total_pages,
+                                "deadline_s": FAST_PARSER_WALL_DEADLINE_S,
+                            },
+                        )
+                        break
                     progress = (page_num - effective_start) / max(total_pages - effective_start, 1)
                     if progress < progress_ceiling and _is_cancelled(task_id):
                         preempted = True
@@ -358,6 +389,7 @@ def parse_pdf(
                 markdown_text = "\n\n".join(markdown_parts)
                 if preempt_span:
                     preempt_span.set_attribute("preempted", preempted)
+                    preempt_span.set_attribute("deadline_truncated", deadline_truncated)
                     preempt_span.set_attribute("last_page_parsed", last_page_parsed)
                     preempt_span.set_attribute("pages_parsed", last_page_parsed - effective_start + 1 if last_page_parsed >= 0 else 0)
                     preempt_span.set_attribute("markdown_length", len(markdown_text))
