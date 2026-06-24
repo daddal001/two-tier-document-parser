@@ -129,6 +129,16 @@ pages_executor = ProcessPoolExecutor(
 # ADR-0056 backpressure threshold: 503 when queue depth > BACKPRESSURE_FACTOR × workers.
 PAGES_BACKPRESSURE_FACTOR = int(os.getenv("PAGES_BACKPRESSURE_FACTOR", "2"))
 
+# Stage-2 `/parse` admission control. Symmetric to the ADR-0056 `/parse-pages`
+# backpressure but on the SHARED `executor`. Without this, `/parse` had no
+# admission control: an upstream caller that raises its concurrency (e.g. the
+# celery-parser-worker threads-pool sizing) could queue work UNBOUNDED inside
+# the shared process pool, growing latency and memory instead of shedding load.
+# A 503 lets the caller's retry_sync_http_per_attempt back off while fast-parser's
+# CPU HPA adds pods to absorb the offered load. 503 fails OPEN (factor*WORKERS
+# threshold) so steady-state traffic is never rejected.
+PARSE_BACKPRESSURE_FACTOR = int(os.getenv("PARSE_BACKPRESSURE_FACTOR", "2"))
+
 # Prometheus metrics for ADR-0056. Names match docs/OBSERVABILITY.md alert rules.
 if _PROM_OK:
     PAGES_EXECUTOR_QUEUE_DEPTH = Gauge(
@@ -147,10 +157,22 @@ if _PROM_OK:
         "Cumulative count of /parse-pages requests rejected with HTTP 503 due to pool saturation.",
         registry=_PROMETHEUS_REGISTRY,
     )
+    EXECUTOR_QUEUE_DEPTH = Gauge(
+        "executor_queue_depth",
+        "Current pending-work-item count for the shared /parse (Stage 2) ProcessPoolExecutor.",
+        registry=_PROMETHEUS_REGISTRY,
+    )
+    PARSE_BACKPRESSURE_503 = Gauge(
+        "parse_backpressure_503_total",
+        "Cumulative count of /parse requests rejected with HTTP 503 due to shared-pool saturation.",
+        registry=_PROMETHEUS_REGISTRY,
+    )
 else:  # pragma: no cover
     PAGES_EXECUTOR_QUEUE_DEPTH = Gauge()
     PARSE_PAGES_TOTAL_MS = Histogram()
     PARSE_PAGES_BACKPRESSURE_503 = Gauge()
+    EXECUTOR_QUEUE_DEPTH = Gauge()
+    PARSE_BACKPRESSURE_503 = Gauge()
 
 
 def _pages_executor_queue_depth() -> int:
@@ -164,6 +186,20 @@ def _pages_executor_queue_depth() -> int:
     """
     try:
         return len(pages_executor._pending_work_items)  # type: ignore[attr-defined]
+    except AttributeError:
+        return 0
+
+
+def _executor_queue_depth() -> int:
+    """Read pending-work-item count from the shared `/parse` (Stage 2) pool.
+
+    Same private-attribute access + fail-open contract as
+    `_pages_executor_queue_depth`: if `_pending_work_items` is renamed in a
+    future CPython release this returns 0, so Stage-2 backpressure simply
+    disengages rather than rejecting all traffic.
+    """
+    try:
+        return len(executor._pending_work_items)  # type: ignore[attr-defined]
     except AttributeError:
         return 0
 
@@ -199,6 +235,7 @@ async def metrics() -> Response:
     # Refresh the gauge on every scrape so we always publish a current
     # snapshot even if the route hasn't been called recently.
     PAGES_EXECUTOR_QUEUE_DEPTH.set(_pages_executor_queue_depth())
+    EXECUTOR_QUEUE_DEPTH.set(_executor_queue_depth())
     return Response(
         content=generate_latest(_PROMETHEUS_REGISTRY) if _PROM_OK else b"",
         media_type=CONTENT_TYPE_LATEST,
@@ -397,6 +434,35 @@ async def parse(request: Request) -> ParseResponse:
     parse_span_ctx.__enter__()
 
     try:
+        # Stage-2 admission control (symmetric to ADR-0056 /parse-pages). Sample
+        # the shared-pool depth BEFORE the MinIO read so a saturated pool sheds
+        # load fast (503) instead of buffering an unbounded backlog of in-flight
+        # full parses. The caller's retry_sync_http_per_attempt backs off while
+        # fast-parser's CPU HPA scales out to absorb the offered concurrency.
+        queue_depth = _executor_queue_depth()
+        EXECUTOR_QUEUE_DEPTH.set(queue_depth)
+        backpressure_limit = PARSE_BACKPRESSURE_FACTOR * WORKERS
+        if queue_depth > backpressure_limit:
+            PARSE_BACKPRESSURE_503.inc()
+            span = trace.get_current_span()
+            span.set_attribute("parse.backpressure", True)
+            span.set_attribute("executor.queue_depth", queue_depth)
+            span.set_attribute("executor.backpressure_limit", backpressure_limit)
+            logger.warning(
+                "Rejecting /parse with 503: shared pool saturated",
+                extra={
+                    "service_name": "fast-parser",
+                    "component": "backpressure",
+                    "executor_queue_depth": queue_depth,
+                    "executor_workers": WORKERS,
+                    "backpressure_limit": backpressure_limit,
+                },
+            )
+            raise HTTPException(
+                status_code=503,
+                detail="parse_pool_saturated",
+            )
+
         pdf_bytes, safe_filename, parse_source, task_id, start_page, image_opts = await _read_pdf_from_request(request, stage1=False)
     except HTTPException:
         parse_span_ctx.__exit__(None, None, None)

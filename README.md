@@ -598,6 +598,25 @@ import — service still boots if the wheel is absent in a stripped build):
 | `parse_pages_total_ms_seconds` | Histogram | End-to-end wall-clock latency at the `/parse-pages` route handler (entry → return). Buckets: 50 ms → 60 s. |
 | `parse_pages_backpressure_503_total` | Gauge (cumulative count) | Number of requests rejected with HTTP 503 due to pool saturation; rises when the inversion threshold is crossed. |
 
+#### `/parse` (Stage 2) admission control (ADR-0078)
+
+`/parse` (Stage 2, full document) runs on the shared `executor` and historically
+had **no** admission control — unlike `/parse-pages`, an over-driving caller could
+queue work *unbounded* inside the process pool, growing latency and memory instead
+of shedding load. This matters now that the upstream `celery-parser-worker` scales
+its in-flight concurrency on Redis queue depth (KEDA, ADR-0078). `/parse` now
+mirrors the ADR-0056 backpressure on its own pool:
+
+| Surface | Behaviour |
+|---------|-----------|
+| **Backpressure (HTTP 503)** | When `len(executor._pending_work_items) > PARSE_BACKPRESSURE_FACTOR × WORKERS` (default 2×), `/parse` returns `503 parse_pool_saturated` *before* the MinIO read. Same fail-open `try/except AttributeError` contract as `/parse-pages`. |
+| **Caller back-off** | `backend-document`'s `retry_sync_http_per_attempt` retries the 503 with jittered backoff while fast-parser's **CPU HPA** scales out more parse pods to absorb the offered concurrency. |
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `executor_queue_depth` | Gauge | Pending-work-item count for the shared `/parse` pool; sampled in the 503 check and on every `/metrics` scrape. |
+| `parse_backpressure_503_total` | Gauge (cumulative count) | Number of `/parse` requests rejected with HTTP 503 due to shared-pool saturation. |
+
 
 ## 🛠️ Troubleshooting
 
