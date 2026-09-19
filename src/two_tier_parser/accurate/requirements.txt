@@ -1,6 +1,6 @@
 fastapi==0.121.2
 uvicorn[standard]==0.24.0
-python-multipart==0.0.26
+python-multipart==0.0.27
 
 # Pin transformers version for MinerU VLM backend stability
 # The vLLM base image already has compatible PyTorch, so we don't override it
