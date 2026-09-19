@@ -54,7 +54,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# ADR-0049: pymupdf4llm>=0.3.0 auto-bundles pymupdf-layout (GNN layout analysis).
+# pymupdf4llm>=0.3.0 auto-bundles pymupdf-layout (GNN layout analysis).
 fast = [
     "pymupdf4llm>=0.3.0",
     "pymupdf>=1.26",
@@ -82,7 +82,7 @@ telemetry = [
     "opentelemetry-instrumentation-asyncpg>=0.41b0",
     "opentelemetry-instrumentation-logging>=0.41b0",
 ]
-# Full SDK + exporter for platform deployments (AEGIS AI).
+# Full SDK + exporter for deployments that enable distributed tracing.
 # Enables actual trace export to OTEL Collector via OTLP gRPC.
 # Install with: pip install .[telemetry,telemetry-sdk]
 telemetry-sdk = [

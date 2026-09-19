@@ -68,17 +68,24 @@ docker-compose -f deploy/docker-compose.yml down
 ```
 
 ### Option 3: Install as Python Package (Development)
+
+Use Python 3.11+ for the fast service. Accurate-parser's model and native
+dependencies are provided by the Docker setup above.
+
 ```bash
 # Create virtual environment
 python3 -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 
 # Install with dependencies
-pip install -e .[dev]
+pip install -e '.[fast,telemetry,dev]'
 
-# Run CLI demo
-python examples/demo_client.py examples/data/sample.pdf --mode fast
+# Start the fast service
+python -m uvicorn two_tier_parser.fast.main:app --host 127.0.0.1 --port 8004
 ```
+
+In another terminal with the environment activated, run
+`python examples/demo_client.py examples/data/sample.pdf --mode fast`.
 
 ## Testing the Services
 
@@ -134,5 +141,4 @@ See [DOCKER_SETUP.md](DOCKER_SETUP.md) for detailed troubleshooting.
 
 ## License
 
-This project is licensed under AGPL-3.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE) for details.
-
+This project is licensed under AGPL-3.0. See [LICENSE](../LICENSE) and [NOTICE](../NOTICE) for details.

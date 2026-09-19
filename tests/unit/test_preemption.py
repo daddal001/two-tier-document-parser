@@ -1,4 +1,4 @@
-"""Unit tests for ADR-0047 cooperative preemption in fast-parser.
+"""Unit tests for cooperative preemption in fast-parser.
 
 These tests exercise service.parse_pdf with a mocked Redis client and a
 monkey-patched pymupdf4llm.to_markdown so we don't need a real PDF pipeline.

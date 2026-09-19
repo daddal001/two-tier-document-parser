@@ -17,6 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - MinerU operation wrapping with detailed attributes
 
 ### Changed
+- Made public documentation self-contained: removed application ADR references,
+  private deployment settings and external repository links; documented storage
+  ownership, configurable admission and optional cancellation for independent callers.
 - **BREAKING:** Renamed entry points from `app.py` → `main.py` (industry standard)
 - Added backwards-compatible `app.py` wrappers with deprecation warnings
 - Updated Dockerfiles to use `main.py` entry points

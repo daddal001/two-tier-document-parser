@@ -7,22 +7,24 @@ Observability:
 - OpenTelemetry API-only instrumentation (no-op without SDK)
 - Structured JSON logging with NullHandler fallback
 - Zero overhead for users who don't need tracing
-- prometheus_client metrics exposed at /metrics (gauge + histogram per ADR-0056)
+- prometheus_client metrics exposed at /metrics (gauge + histogram per )
 """
 import asyncio
 import json
 import logging
 import os
+import threading
 import time
 from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
 from opentelemetry import trace
 
 # Prometheus client is optional (defence-in-depth: never crash startup if the
-# package is missing in a particular build). Per ADR-0056 we publish two
+# package is missing in a particular build). We publish two
 # metrics: `pages_executor_queue_depth` (Gauge) and `parse_pages_total_ms_seconds`
 # (Histogram). Falls back to no-op stand-ins so the route logic stays clean.
 try:
@@ -101,8 +103,9 @@ except ImportError:
 # ProcessPoolExecutor for concurrent parsing (PyMuPDF doesn't support threading)
 # See: https://pymupdf.readthedocs.io/en/latest/recipes-multiprocessing.html
 # max_tasks_per_child=50 recycles workers after 50 parse tasks to release accumulated
-# memory from PyMuPDF internal caches (Meta TorchServe pattern).
-# ADR-0049: default worker count = container vCPUs. Prior hard-coded 2 was the
+# memory from PyMuPDF internal caches while retaining the established general-
+# service default. Deployments may override this with WORKER_MAX_TASKS.
+# default worker count = container vCPUs. Prior hard-coded 2 was the
 # largest single contributor to the 10× throughput gap. Respects cgroup CPU
 # limits via sched_getaffinity on Linux; falls back to os.cpu_count elsewhere.
 def _default_workers() -> int:
@@ -116,34 +119,121 @@ WORKERS = int(os.getenv("WORKERS", str(_default_workers())))
 MAX_TASKS = int(os.getenv("WORKER_MAX_TASKS", "50"))
 executor = ProcessPoolExecutor(max_workers=WORKERS, max_tasks_per_child=MAX_TASKS)
 
-# ADR-0056: dedicated pool for the latency-sensitive `/parse-pages` route.
+# dedicated pool for the latency-sensitive `/parse-pages` route.
 # Eliminates priority inversion against multi-minute `/parse` calls on the
-# shared `executor`. Sized at half the shared pool (floor 2) so we keep
-# headroom for concurrent /parse-pages bursts without starving /parse.
-PAGES_WORKERS = max(2, WORKERS // 2)
+# shared `executor`. The established default keeps at least two page workers;
+# deployments with tighter capacity can override this explicitly.
+PAGES_WORKERS = int(os.getenv("PAGES_WORKERS", str(max(2, WORKERS // 2))))
 pages_executor = ProcessPoolExecutor(
     max_workers=PAGES_WORKERS,
     max_tasks_per_child=MAX_TASKS,
 )
+_executor_reset_lock = threading.Lock()
 
-# ADR-0056 backpressure threshold: 503 when queue depth > BACKPRESSURE_FACTOR × workers.
+
+def _recover_broken_executor(
+    failed_executor: ProcessPoolExecutor,
+    *,
+    stage1: bool,
+) -> HTTPException:
+    """Replace a failed parser pool and return a retryable HTTP error.
+
+    A child OOM or abrupt exit breaks the entire ProcessPoolExecutor. Keeping
+    that object would make every later request fail even after memory pressure
+    clears. The identity check ensures concurrent failures replace a given
+    pool only once.
+    """
+    global executor, pages_executor
+
+    with _executor_reset_lock:
+        current = pages_executor if stage1 else executor
+        if current is failed_executor:
+            workers = PAGES_WORKERS if stage1 else WORKERS
+            replacement = ProcessPoolExecutor(
+                max_workers=workers,
+                max_tasks_per_child=MAX_TASKS,
+            )
+            if stage1:
+                pages_executor = replacement
+            else:
+                executor = replacement
+            failed_executor.shutdown(wait=False, cancel_futures=True)
+
+    return HTTPException(
+        status_code=503,
+        detail="parser_worker_unavailable",
+        headers={"Retry-After": "2"},
+    )
+
+# backpressure threshold: 503 when queue depth > BACKPRESSURE_FACTOR × workers.
 PAGES_BACKPRESSURE_FACTOR = int(os.getenv("PAGES_BACKPRESSURE_FACTOR", "2"))
 
-# Stage-2 `/parse` admission control. Symmetric to the ADR-0056 `/parse-pages`
+# Stage-2 `/parse` admission control. Symmetric to the `/parse-pages`
 # backpressure but on the SHARED `executor`. Without this, `/parse` had no
-# admission control: an upstream caller that raises its concurrency (e.g. the
-# celery-parser-worker threads-pool sizing) could queue work UNBOUNDED inside
+# admission control: an upstream caller that raises its concurrency could queue work inside
 # the shared process pool, growing latency and memory instead of shedding load.
-# A 503 lets the caller's retry_sync_http_per_attempt back off while fast-parser's
-# CPU HPA adds pods to absorb the offered load. 503 fails OPEN (factor*WORKERS
-# threshold) so steady-state traffic is never rejected.
+# A 503 lets callers apply bounded backoff. This pool-specific check falls open
+# if the executor's private queue attribute is unavailable.
 PARSE_BACKPRESSURE_FACTOR = int(os.getenv("PARSE_BACKPRESSURE_FACTOR", "2"))
 
-# Prometheus metrics for ADR-0056. Names match docs/OBSERVABILITY.md alert rules.
+# Bound the complete document working set (uploads/storage reads plus executor work), not
+# only the private ProcessPoolExecutor queue. This prevents concurrent requests
+# from each passing a stale queue-depth check and buffering unbounded PDFs.
+# Default to the configured process slots for standalone deployments. Callers
+# can set a different positive bound for their memory and latency requirements.
+MAX_INFLIGHT_DOCUMENTS = int(
+    os.getenv("MAX_INFLIGHT_DOCUMENTS", str(WORKERS + PAGES_WORKERS))
+)
+MINIO_HEALTH_TIMEOUT_SECONDS = float(os.getenv("MINIO_HEALTH_TIMEOUT_SECONDS", "1.5"))
+if WORKERS < 1 or PAGES_WORKERS < 1 or MAX_TASKS < 1 or MAX_INFLIGHT_DOCUMENTS < 1:
+    raise ValueError(
+        "WORKERS, PAGES_WORKERS, WORKER_MAX_TASKS, and MAX_INFLIGHT_DOCUMENTS must be positive"
+    )
+_inflight_documents = 0
+_inflight_lock = asyncio.Lock()
+
+
+@app.middleware("http")
+async def bound_parser_inflight_documents(request: Request, call_next):
+    """Reject excess parser work before reading a document into memory.
+
+    The bound is shared by the Stage 1 and Stage 2 endpoints within the service
+    process. A 503 is retriable and deliberately includes ``Retry-After``.
+    """
+    global _inflight_documents
+    if request.url.path not in {"/parse", "/parse-pages"}:
+        return await call_next(request)
+
+    async with _inflight_lock:
+        if _inflight_documents >= MAX_INFLIGHT_DOCUMENTS:
+            logger.warning(
+                "Rejecting parser request with 503: document admission saturated",
+                extra={
+                    "service_name": "fast-parser",
+                    "component": "backpressure",
+                    "inflight_documents": _inflight_documents,
+                    "max_inflight_documents": MAX_INFLIGHT_DOCUMENTS,
+                    "endpoint": request.url.path,
+                },
+            )
+            return JSONResponse(
+                status_code=503,
+                content={"detail": "document_admission_saturated"},
+                headers={"Retry-After": "2"},
+            )
+        _inflight_documents += 1
+
+    try:
+        return await call_next(request)
+    finally:
+        async with _inflight_lock:
+            _inflight_documents -= 1
+
+# Prometheus metrics for . Available to any Prometheus-compatible monitoring system.
 if _PROM_OK:
     PAGES_EXECUTOR_QUEUE_DEPTH = Gauge(
         "pages_executor_queue_depth",
-        "Current pending-work-item count for the /parse-pages dedicated ProcessPoolExecutor (ADR-0056).",
+        "Current pending-work-item count for the /parse-pages dedicated ProcessPoolExecutor .",
         registry=_PROMETHEUS_REGISTRY,
     )
     PARSE_PAGES_TOTAL_MS = Histogram(
@@ -179,10 +269,9 @@ def _pages_executor_queue_depth() -> int:
     """Read pending-work-item count from the dedicated `/parse-pages` pool.
 
     `_pending_work_items` is a private CPython attribute used by `concurrent.futures`
-    internally; ADR-0056 wraps it in a try/except so backpressure fails *open*
+    internally; The check wraps it in a try/except so backpressure fails *open*
     (never blocks legitimate traffic) if a future Python release renames or
-    removes it. Worst case: the route falls back to the timeout path that
-    existed before this ADR — no regression.
+    removes it. In that case, shared admission and request timeouts still apply.
     """
     try:
         return len(pages_executor._pending_work_items)  # type: ignore[attr-defined]
@@ -210,7 +299,7 @@ NO_GIL = os.getenv("PYTHON_GIL") == "0"
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    """Clean up both process pools on shutdown (ADR-0056)."""
+    """Clean up both process pools on shutdown ."""
     logger.info(
         "Shutting down, cleaning up process pools",
         extra={
@@ -226,7 +315,7 @@ async def shutdown_event():
 
 @app.get("/metrics")
 async def metrics() -> Response:
-    """Prometheus scrape endpoint (ADR-0056).
+    """Prometheus scrape endpoint .
 
     Exposes `pages_executor_queue_depth`, `parse_pages_total_ms_seconds`, and
     `parse_pages_backpressure_503_total`. Returns an empty body when
@@ -244,9 +333,24 @@ async def metrics() -> Response:
 
 @app.get("/health", response_model=HealthResponse)
 async def health() -> HealthResponse:
-    """Health check endpoint with worker and MinIO status."""
-    with tracer.start_as_current_span("health", attributes={"service_name": "fast-parser"}):
-        minio_ok = check_minio_connectivity()
+    """Health check endpoint with worker and S3-compatible object storage status."""
+    with tracer.start_as_current_span(
+        "health", attributes={"service_name": "fast-parser"}
+    ):
+        try:
+            minio_ok = await asyncio.wait_for(
+                asyncio.to_thread(check_minio_connectivity),
+                timeout=MINIO_HEALTH_TIMEOUT_SECONDS,
+            )
+        except TimeoutError:
+            logger.warning(
+                "S3-compatible object storage health check exceeded probe budget",
+                extra={
+                    "service_name": "fast-parser",
+                    "timeout_seconds": MINIO_HEALTH_TIMEOUT_SECONDS,
+                },
+            )
+            minio_ok = False
         return HealthResponse(
             status="degraded" if not minio_ok else "healthy",
             workers=WORKERS,
@@ -272,10 +376,10 @@ def _sanitize_filename(filename: str) -> str:
 
 
 def _image_opts_from_payload(payload: dict, *, stage1: bool = False) -> dict:
-    """Extract ADR-0049 image-extraction options from a JSON request payload.
+    """Extract image-extraction options from a JSON request payload.
 
     Stage 1 (/parse-pages) defaults are tighter than Stage 2 (/parse) because
-    Stage 1 is latency-critical (≤ 1.5s soft / ≤ 5s hard SLO per ADR-0047).
+    Stage 1 is latency-critical (≤ 1.5s soft / ≤ 5s hard SLO per ).
     OWASP ASVS V12 + pixel-flood issue #1740 caps.
     """
     default_max_count = 50 if stage1 else 500
@@ -316,14 +420,14 @@ async def _read_pdf_from_request(
     Returns:
         Tuple of (pdf_bytes, safe_filename, parse_source, task_id, start_page, image_opts).
         ``task_id`` and ``start_page`` are only populated from JSON payloads
-        (ADR-0047 preemption/resume); multipart uploads always return
+        (preemption/resume); multipart uploads always return
         (None, 0, <defaults>).
-        ``image_opts`` is the ADR-0049 image-extraction options dict.
+        ``image_opts`` is the image-extraction options dict.
     """
     content_type = request.headers.get("content-type", "")
 
     if content_type.startswith("application/json"):
-        # Claim-check path: read from MinIO via bucket/key reference
+        # Claim-check path: read from S3-compatible object storage via bucket/key reference
         body = await request.body()
         try:
             payload = json.loads(body)
@@ -366,7 +470,7 @@ async def _read_pdf_from_request(
             pdf_bytes = read_file_from_minio(bucket, key)
         except Exception as e:
             logger.error(
-                "Failed to read file from MinIO",
+                "Failed to read file from S3-compatible object storage",
                 extra={
                     "service_name": "fast-parser",
                     "document_name": safe_filename,
@@ -434,11 +538,10 @@ async def parse(request: Request) -> ParseResponse:
     parse_span_ctx.__enter__()
 
     try:
-        # Stage-2 admission control (symmetric to ADR-0056 /parse-pages). Sample
-        # the shared-pool depth BEFORE the MinIO read so a saturated pool sheds
+        # Stage-2 admission control (symmetric to /parse-pages). Sample
+        # the shared-pool depth BEFORE the S3-compatible object storage read so a saturated pool sheds
         # load fast (503) instead of buffering an unbounded backlog of in-flight
-        # full parses. The caller's retry_sync_http_per_attempt backs off while
-        # fast-parser's CPU HPA scales out to absorb the offered concurrency.
+        # full parses. Callers own retry budgets and deployment scaling policy.
         queue_depth = _executor_queue_depth()
         EXECUTOR_QUEUE_DEPTH.set(queue_depth)
         backpressure_limit = PARSE_BACKPRESSURE_FACTOR * WORKERS
@@ -490,14 +593,15 @@ async def parse(request: Request) -> ParseResponse:
         loop = asyncio.get_event_loop()
         logger.debug("Submitting to process pool", extra={"service_name": "fast-parser", "document_name": safe_filename, "workers": WORKERS})
 
+        active_executor = executor
         result = await loop.run_in_executor(
-            executor,
+            active_executor,
             parse_pdf,
             pdf_bytes,
             safe_filename,  # SECURITY: Use sanitized filename
             task_id,
             start_page,
-            0.8,  # progress_ceiling (ADR-0047 default)
+            0.8,  # progress_ceiling (default)
             image_opts["extract_images_flag"],
             image_opts["image_max_count"],
             image_opts["image_max_bytes"],
@@ -520,8 +624,8 @@ async def parse(request: Request) -> ParseResponse:
                 detail=f"Parsing failed: {result.get('error', 'Unknown error')}"
             )
 
-        # ADR-0047: translate preemption into HTTP 409. The Stage 2 Celery task
-        # catches this and RPUSHes a resume payload to parser:deferred.
+        # translate preemption into HTTP 409. The caller
+        # chooses how to schedule a subsequent resume request.
         if result.get("metadata", {}).get("preempted"):
             last_page = result["metadata"].get("last_page_parsed", -1)
             total_pages = result["metadata"].get("pages", 0)
@@ -571,6 +675,18 @@ async def parse(request: Request) -> ParseResponse:
     except HTTPException:
         parse_span_ctx.__exit__(None, None, None)
         raise
+    except BrokenProcessPool as e:
+        logger.error(
+            "Parser worker process exited; replacing pool",
+            exc_info=True,
+            extra={
+                "service_name": "fast-parser",
+                "document_name": safe_filename,
+                "error_type": type(e).__name__,
+            },
+        )
+        parse_span_ctx.__exit__(type(e), e, e.__traceback__)
+        raise _recover_broken_executor(active_executor, stage1=False)
     except Exception as e:
         logger.error(
             "Parsing failed",
@@ -602,10 +718,8 @@ async def parse_pages(
     request_start = time.perf_counter()
 
     with tracer.start_as_current_span("parse_pages", attributes={"service_name": "fast-parser", "endpoint": "/parse-pages"}) as span:
-        # ADR-0056 backpressure: refuse fast and let backend-document fall
-        # through to its 0-byte sentinel branch instead of holding a 60s
-        # client connection that would time out anyway. Threshold is sampled
-        # *before* PDF read so we don't waste MinIO bandwidth on a request
+        # backpressure: refuse fast and let the caller apply its retry policy. Threshold is sampled
+        # *before* PDF read so we don't waste S3-compatible object storage bandwidth on a request
         # we're about to reject.
         queue_depth = _pages_executor_queue_depth()
         PAGES_EXECUTOR_QUEUE_DEPTH.set(queue_depth)
@@ -656,13 +770,14 @@ async def parse_pages(
         if file_size > 100 * 1024 * 1024:
             raise HTTPException(status_code=413, detail="File too large (max 100MB)")
 
-        # ADR-0056: submit to the dedicated `pages_executor`, not the shared
+        # submit to the dedicated `pages_executor`, not the shared
         # `executor`. Refresh queue-depth after submit so the gauge reflects
         # the new pending count for any concurrent scrape.
         try:
             loop = asyncio.get_event_loop()
+            active_executor = pages_executor
             future = loop.run_in_executor(
-                pages_executor,
+                active_executor,
                 parse_pdf_page_range,
                 pdf_bytes,
                 safe_filename,  # SECURITY: Use sanitized filename
@@ -701,6 +816,17 @@ async def parse_pages(
 
             return PageRangeParseResponse(**result)
 
+        except BrokenProcessPool as e:
+            logger.error(
+                "Page-range parser worker process exited; replacing pool",
+                exc_info=True,
+                extra={
+                    "service_name": "fast-parser",
+                    "document_name": safe_filename,
+                    "error_type": type(e).__name__,
+                },
+            )
+            raise _recover_broken_executor(active_executor, stage1=True)
         except Exception as e:
             logger.error(
                 "Page range parsing failed",

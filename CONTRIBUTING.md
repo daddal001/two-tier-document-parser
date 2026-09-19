@@ -55,15 +55,17 @@ Be respectful and inclusive. We welcome contributions from everyone.
 ## Development Setup
 
 ```bash
-# Clone your fork
-git clone https://github.com/daddal001/two-tier-document-parser.git
-cd two-tier-document-parser
+# Clone the public repository (use your fork URL when contributing)
+git clone https://github.com/daddal001/two_tier_document_parser.git
+cd two_tier_document_parser
 
-# Install development dependencies
-pip install -e .[dev]
+# Use Python 3.11+ for fast-parser process pool recycling
+python -m venv .venv
+source .venv/bin/activate
+pip install -e '.[fast,telemetry,dev]'
 
-# Run tests
-make test
+# Run unit tests
+make test-unit
 
 # Format code
 make format
@@ -73,6 +75,10 @@ make lint
 ```
 
 ## Project Structure
+
+Integration tests require running parser services. Follow the
+[Docker setup](docs/DOCKER_SETUP.md) and [testing guide](docs/TESTING.md)
+before running `make test-integration` or the full `make test` suite.
 
 ```
 two_tier_document_parser/
@@ -131,4 +137,3 @@ Feel free to open an issue for discussion or questions about contributing.
 ## License
 
 By contributing, you agree that your contributions will be licensed under the AGPL-3.0 License.
-

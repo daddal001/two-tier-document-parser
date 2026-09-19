@@ -26,7 +26,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
-# ADR-0049: activate PyMuPDF-Layout GNN BEFORE importing pymupdf4llm.
+# activate PyMuPDF-Layout GNN BEFORE importing pymupdf4llm.
 # Auto-bundled in pymupdf4llm >= 0.3.0; module is import-order-sensitive.
 # FAST_PARSER_DISABLE_LAYOUT=1 skips the import as an emergency escape hatch.
 if os.getenv("FAST_PARSER_DISABLE_LAYOUT", "").strip().lower() not in {"1", "true", "yes"}:
@@ -79,7 +79,7 @@ def _get_preempt_redis():
 def _is_cancelled(task_id: Optional[str]) -> bool:
     """Non-raising check for parse_cancel:{task_id} flag.
 
-    ADR-0047. Callers check between page boundaries; returning False on error
+    Callers check between page boundaries; returning False on error
     means the parse runs to completion (safe default).
     """
     if not task_id:
@@ -125,7 +125,7 @@ except ImportError:
         return _noop()
 
 
-# ADR-0049: image extraction via direct PyMuPDF API (not pymupdf4llm.write_images).
+# image extraction via direct PyMuPDF API (not pymupdf4llm.write_images).
 # Bypasses open upstream bug pymupdf4llm#352 (image_path ignored under layout).
 # OWASP ASVS V12 caps enforced: count, bytes, pixels.
 
@@ -138,8 +138,7 @@ IMAGE_TRUNCATION_REASONS = {"count", "bytes", "pixels"}
 # page-by-page with no terminal state. This bounds the loop BETWEEN pages (the C
 # call within a single page is not interruptible) and returns the partial markdown
 # with HTTP 200, so the backend records partial content instead of timing out.
-# Set comfortably under backend-document's PARSER_TIMEOUT_MAX_S (1800s) so the
-# parser returns first. 0 / negative disables the deadline.
+# Configure below the caller's HTTP timeout so the parser returns first. 0 / negative disables the deadline.
 FAST_PARSER_WALL_DEADLINE_S = float(os.getenv("FAST_PARSER_WALL_DEADLINE_S", "1500"))
 
 
@@ -272,7 +271,7 @@ def parse_pdf(
     If individual pages cause errors (e.g., table detection bug), skip those pages
     and continue parsing the rest of the document.
 
-    Preemption (ADR-0047): when ``task_id`` is provided, parsing iterates
+    Preemption : when ``task_id`` is provided, parsing iterates
     page-by-page and between each page checks the Redis ``parse_cancel:{task_id}``
     flag. If the flag is set and fewer than ``progress_ceiling`` of pages have
     been parsed, the function returns early with ``preempted=True`` and the
@@ -285,7 +284,7 @@ def parse_pdf(
         filename: Original filename for logging
         task_id: Optional Celery task ID for cooperative preemption.
         start_page: 0-indexed resume cursor (inclusive). Used when resuming a
-            previously preempted parse from ADR-0046's ``parser:deferred``.
+            previously preempted parse managed by the caller.
         progress_ceiling: Fraction of total pages above which preemption is
             ignored (near-finished work is not discarded). Default 0.8.
 
@@ -300,7 +299,7 @@ def parse_pdf(
 
     import pymupdf
 
-    # ADR-0049: BytesIO input — skip tempfile round-trip. pymupdf accepts
+    # BytesIO input — skip tempfile round-trip. pymupdf accepts
     # stream=bytes since 1.14.13. Single open (previously this function opened
     # the file 3 times: page count, full parse, fallback). Reuse one handle
     # for the entire request to save ~2× open overhead on small docs.
@@ -316,7 +315,7 @@ def parse_pdf(
         )
 
     try:
-        # Preemptable path (ADR-0047): task_id present means Stage 2 resume/cancel
+        # Preemptable path : task_id present means Stage 2 resume/cancel
         # semantics. We iterate page-by-page and check parse_cancel:{task_id}
         # between pages so long parses can be preempted by Stage 1 partial parses.
         skipped_pages = []
@@ -495,7 +494,7 @@ def parse_pdf(
             }
         }
 
-        # ADR-0047 preemption: report partial-progress state so main.py can
+        # preemption: report partial-progress state so main.py can
         # translate into HTTP 409. last_page_parsed is -1 when nothing parsed.
         if preempted or task_id is not None:
             result["metadata"]["preempted"] = preempted
@@ -517,7 +516,7 @@ def parse_pdf(
                 }
             )
 
-        # ADR-0049: extract images from the same open doc handle before close.
+        # extract images from the same open doc handle before close.
         images: List[Dict[str, Any]] = []
         images_truncated: Optional[str] = None
         if extract_images_flag:
@@ -528,7 +527,7 @@ def parse_pdf(
                 "max_pixels": image_max_pixels,
             }) as img_span:
                 # Only extract from pages that were actually parsed; respects
-                # ADR-0047 preempt (we don't want to pay for pages we bailed on).
+                # preempt (we don't want to pay for pages we bailed on).
                 if task_id is not None and last_page_parsed >= 0:
                     image_page_range = range(effective_start, last_page_parsed + 1)
                 elif task_id is not None:
@@ -571,7 +570,7 @@ def parse_pdf(
         return result
 
     finally:
-        # ADR-0049: no tempfile; single doc handle closes here. gc.collect()
+        # no tempfile; single doc handle closes here. gc.collect()
         # still useful in long-lived ProcessPool worker to release pymupdf
         # internal caches — kept for parity with max_tasks_per_child pattern.
         try:
@@ -618,7 +617,7 @@ def parse_pdf_page_range(
 
     import pymupdf
 
-    # ADR-0049: BytesIO input, single doc handle (was: tempfile + 2 opens).
+    # BytesIO input, single doc handle (was: tempfile + 2 opens).
     with traced_operation("pdf.load", {"file_name": filename, "mode": "page_range", "pdf_size_bytes": len(pdf_bytes)}) as span:
         doc = pymupdf.open(stream=pdf_bytes, filetype="pdf")
         total_pages = len(doc)
@@ -697,7 +696,7 @@ def parse_pdf_page_range(
             }
         )
 
-        # ADR-0049: image extraction for Stage 1 partial parses — tighter caps
+        # image extraction for Stage 1 partial parses — tighter caps
         # than Stage 2 to protect the 1.5s soft SLO under pathological PDFs.
         images: List[Dict[str, Any]] = []
         images_truncated: Optional[str] = None

@@ -2,6 +2,10 @@
 
 This guide explains how to run the two-tier document parser using Docker Compose and visualize results with Jupyter notebooks.
 
+Performance and accuracy figures below are historical examples without a
+reproducible benchmark attached to this guide. They are not service guarantees;
+measure your corpus and hardware before setting capacity or timeout budgets.
+
 ## Prerequisites
 
 - Docker Desktop (with Docker Compose)
@@ -68,13 +72,16 @@ curl -X POST http://localhost:8004/parse \
   > fast_result.json
 
 # Parse a PDF with accurate parser (takes 10-11 minutes for VLM processing)
-# Note: Default timeout is 600 seconds (10 minutes)
+# Set a client deadline appropriate to your document and hardware
 curl -X POST http://localhost:8005/parse \
   -F "file=@/path/to/your/document.pdf" \
   > accurate_result.json
 ```
 
-**Important:** The accurate parser using VLM transformers backend takes **10-11 minutes** per 11-page document for high-accuracy extraction (95%+ accuracy). The server timeout is configured to 600 seconds (10 minutes) to accommodate this.
+The demo client's default request timeout is 600 seconds and can be overridden
+with `--timeout`. This would be insufficient for an 11-minute parse. Configure
+client and proxy deadlines for measured processing time. The Compose setting
+`UVICORN_TIMEOUT_KEEP_ALIVE=600` is not a processing-time budget.
 
 ## 🔄 Automatic GPU Detection & Fallback
 

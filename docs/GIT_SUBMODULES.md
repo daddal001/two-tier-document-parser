@@ -382,5 +382,5 @@ variables:
 
 **Related Documentation:**
 - [README.md](README.md) - Project overview and quick start
-- [CLAUDE.md](CLAUDE.md) - AI assistant development guidance
-- [PARSING_PLAN.md](PARSING_PLAN.md) - Implementation roadmap
+- [Contributing](../CONTRIBUTING.md) - Development and contribution guidance
+- [Changelog](../CHANGELOG.md) - Release history

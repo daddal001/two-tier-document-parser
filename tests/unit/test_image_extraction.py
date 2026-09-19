@@ -1,4 +1,4 @@
-"""ADR-0049 unit tests for fast-parser image extraction.
+"""unit tests for fast-parser image extraction.
 
 Covers:
 - SHA-256 content dedup (same xref on multiple pages → one ImageData, pages=[...])

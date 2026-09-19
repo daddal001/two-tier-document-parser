@@ -2,22 +2,26 @@
 title: "Two-Tier Document Parser"
 type: "reference"
 status: "approved"
-classification: "internal"
-owner: "@backend-team"
+classification: "public"
+owner: "@daddal001"
 created: "2025-11-01"
-last_updated: "2026-05-05"
-version: "1.2.0"
+last_updated: "2026-09-14"
+version: "1.4.0"
 ---
 
 # Two-Tier Document Parser 📄🚀
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.104.0+-009688.svg?style=flat&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
+[![Python 3.11+ service runtime](https://img.shields.io/badge/service_python-3.11+-blue.svg)](https://www.python.org/downloads/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.121.2+-009688.svg?style=flat&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
 [![Docker](https://img.shields.io/badge/Docker-Enabled-blue.svg?logo=docker)](https://www.docker.com/)
 [![MinerU](https://img.shields.io/badge/MinerU-Powered-orange)](https://github.com/opendatalab/MinerU)
 
-A production-ready, **two-tier document parsing API** designed for RAG pipelines and data extraction workflows. It intelligently routes parsing requests to either a high-speed CPU-based parser or a high-accuracy VLM parser (with automatic CPU pipeline fallback when no GPU is available).
+A production-ready, **two-tier document parsing API** designed for RAG pipelines and data extraction workflows. Callers choose the high-speed CPU endpoint or the high-accuracy endpoint; the accurate service supports a CPU pipeline fallback when no GPU is available.
+
+Performance and accuracy figures in this documentation are historical examples,
+not verified service guarantees. Benchmark your own documents and hardware before
+choosing capacity and deadlines.
 
 ## Table of Contents
 
@@ -69,7 +73,7 @@ The easiest way to get started is using Docker Compose. **Both parsers work with
 ```bash
 # Clone the repository
 git clone https://github.com/daddal001/two_tier_document_parser.git
-cd two-tier-document-parser
+cd two_tier_document_parser
 
 # Start services (works with or without GPU)
 docker-compose -f deploy/docker-compose.yml up --build -d
@@ -78,6 +82,15 @@ docker-compose -f deploy/docker-compose.yml up --build -d
 curl http://localhost:8004/health  # Fast parser
 curl http://localhost:8005/health  # Accurate parser
 ```
+
+Fast-parser reports `degraded` when S3-compatible object storage is unavailable. Its S3-compatible object storage check runs
+outside the async event loop with a configurable 1.5-second route budget.
+The legacy field `minio_connected` reports adapter connectivity.
+
+If an OOM or abrupt child exit breaks either parsing process pool, fast-parser
+replaces that pool and returns HTTP 503 with `Retry-After: 2`. Durable callers
+can retry on a healthy worker pool instead of treating worker loss as a
+terminal HTTP 500.
 
 **Note for CPU-only machines**: If Docker fails to start with a "nvidia runtime" error, see the [GPU Configuration Guide](#gpu-configuration-guide) below for CPU-only setup instructions.
 
@@ -89,16 +102,19 @@ Services will be available at:
 
 ### Python Package
 
-Install as a Python package for development:
+For local fast-parser development, use Python 3.11 or newer (required by process
+pool recycling), from the repository root:
 
 ```bash
-# Install the package
-pip install -e .[fast]  # For fast parser only
-pip install -e .[accurate]  # For accurate parser (works with or without GPU)
-
-# Or install with all dependencies
-pip install -e .[dev]
+python -m venv .venv
+source .venv/bin/activate
+pip install -e '.[fast,telemetry,dev]'
+python -m uvicorn two_tier_parser.fast.main:app --host 127.0.0.1 --port 8004
 ```
+
+The `dev` extra installs development tools, not all parser dependencies. Use the
+Docker setup above for accurate-parser's native dependencies and model setup;
+the `accurate` extra alone does not install the complete MinerU runtime.
 
 ---
 
@@ -151,14 +167,14 @@ graph TD
 
 **Endpoint**: `POST http://localhost:8004/parse`
 
-#### Layout analysis (pymupdf-layout, ADR-0049)
+#### Layout analysis (pymupdf-layout)
 
 Fast-parser auto-activates the [PyMuPDF-Layout](https://pymupdf.io/blog/pymupdf-layout-10-faster-pdf-parsing-without-gpus) GNN for markdown structure
 recovery. Import-order-sensitive — `fast/service.py` imports `pymupdf.layout`
 **before** `pymupdf4llm`. Auto-bundled in `pymupdf4llm ≥ 0.3.0`; CPU-only,
 no GPU required. Emergency disable: `FAST_PARSER_DISABLE_LAYOUT=1`.
 
-#### Image extraction (Stage 1 + Stage 2, ADR-0049)
+#### Image extraction (Stage 1 + Stage 2)
 
 Both `/parse` and `/parse-pages` extract images by default. Fast-parser uses
 the direct PyMuPDF API (`page.get_images(full=True)` + `doc.extract_image(xref)`)
@@ -188,9 +204,9 @@ Response adds `images: ImageData[]`:
 }
 ```
 
-Caller uploads via `services/backend-document/services/document_storage.py:_store_parsed_images()`
-to `{MINIO_IMAGES_BUCKET}/{user_id}/{document_name}/parsed/images/{image_id}.{ext}`.
-Extension from RFC 2046 mime; idempotent MinIO PUT.
+The caller receives base64 image bytes and metadata and chooses where to
+persist them. The service does not prescribe a bucket, object-key layout,
+application database or task queue.
 
 #### Example request (JSON claim-check, preferred)
 
@@ -201,7 +217,7 @@ curl -X POST "http://localhost:8004/parse" \
         "bucket": "documents",
         "key": "alice/doc_a/original/document.pdf",
         "filename": "document.pdf",
-        "task_id": "celery-parse-task-id",
+        "task_id": "document-parse-001",
         "start_page": 0,
         "extract_images": true
       }'
@@ -215,7 +231,7 @@ curl -X POST "http://localhost:8004/parse" \
   -F "file=@document.pdf"
 ```
 
-**Request (JSON claim-check, preferred — also carries preemption context per ADR-0047):**
+**Request (JSON claim-check, also carries optional preemption context):**
 ```bash
 curl -X POST "http://localhost:8004/parse" \
   -H "Content-Type: application/json" \
@@ -223,15 +239,15 @@ curl -X POST "http://localhost:8004/parse" \
         "bucket": "documents",
         "key": "alice/doc_a/original/document.pdf",
         "filename": "document.pdf",
-        "task_id": "celery-parse-task-id",
+        "task_id": "document-parse-001",
         "start_page": 0
       }'
 ```
 
 | Field | Required | Purpose |
 |-------|----------|---------|
-| `bucket`, `key`, `filename` | yes | MinIO claim-check reference |
-| `task_id` | no | Enables [ADR-0047 cooperative preemption](../../docs/architecture/decisions/0047-cooperative-preemption-for-fast-parser-contention.md). When set, parsing iterates page-by-page and checks `parse_cancel:{task_id}` between pages. |
+| `bucket`, `key`, `filename` | yes | S3-compatible object storage claim-check reference |
+| `task_id` | no | Enables optional cooperative preemption. When set, parsing iterates page-by-page and checks the Redis key `parse_cancel:{task_id}` between pages. |
 | `start_page` | no | 0-indexed resume cursor for previously preempted parses. |
 
 **Response (200 — normal):**
@@ -258,7 +274,12 @@ curl -X POST "http://localhost:8004/parse" \
   }
 }
 ```
-The calling Celery task (`parse_full_document`) handles the 409 by RPUSHing a resume payload to `parser:deferred` with `start_page = last_page_parsed + 1`. See ADR-0047 for the full protocol.
+The caller chooses whether to resubmit with `start_page = last_page_parsed + 1`.
+The HTTP 409 response contains progress metadata, not partial markdown; callers
+must account for earlier pages when assembling a complete result. Cancellation
+uses optional Redis configured by `REDIS_URL` (or the legacy
+`CELERY_BROKER_URL` fallback). Without Redis, cancellation checks return false.
+No particular task queue is required.
 
 ### Accurate Parser API
 
@@ -535,14 +556,13 @@ accurate-parser:
 - **Fast Parser**: Scale horizontally (multiple containers) since it's CPU-bound
 - **Accurate Parser**: Scale vertically (better GPU) or use multiple GPU instances
 
-### How is the Fast Parser deployed on Kubernetes (GKE Autopilot)?
+### Deployment ownership
 
-The deployment manifest lives in the parent repository at `infra/deployment/k8s/apps/fast-parser/deployment.yaml`. Two scheduling-tier details are worth knowing if you're calling Fast Parser from another service:
-
-- **Rollouts use `maxSurge: 0 / maxUnavailable: 1`** instead of the default `maxSurge: 1 / maxUnavailable: 0`. The old pod is fully terminated before the new one is scheduled, so a deploy produces a brief gap (bounded by `progressDeadlineSeconds: 120`) rather than a transient second pod. This was deliberately chosen because on a memory-saturated GKE Autopilot cluster the second "surge" pod has nowhere to land and dies as a `ContainerStatusUnknown` ghost. Stage-1 callers (`/parse-pages`) absorb the gap via retry-with-jitter (ADR-0004 amendment); Stage-2 callers (`/parse`) absorb it via cooperative preemption (ADR-0047). If you are writing a new client, make sure your call site has at least one retry with backoff for transient 5xx / network errors.
-- **Pods run under `priorityClassName: aegis-application-high`** (`value: 1000000`, `preemptionPolicy: Never`). This makes Fast Parser the last to be preempted under admission contention with higher-priority pods, but it does **not** preempt its own siblings. The pattern mirrors Google Borg's no-intra-tier-preemption rule (Tirmazi et al., EuroSys 2020). Under sustained cluster-wide memory pressure Fast Parser queues rather than evicts, and Autopilot scales the node pool in response — the old pod keeps serving while the new one waits.
-
-Full design context, root-cause history, and verification commands are in [ADR-0049 amendment 2026-05-28](../../docs/architecture/decisions/0049-fast-parser-layout-and-image-extraction.md) and the *Pod Priority and Preemption* subsection of [`docs/deployment/GKE.md`](../../docs/deployment/GKE.md).
+This repository supplies [container configuration](deploy/docker-compose.yml)
+and [Dockerfiles](deploy/Dockerfile.fast). Callers own ingress, replica counts,
+resource budgets, rollout policies, retry budgets and output persistence.
+Measure representative workloads before selecting those settings. Direct uploads
+require no particular cluster, scheduler or object-store deployment.
 
 ### Is this production-ready?
 
@@ -559,35 +579,23 @@ Yes! The codebase is designed for production use with:
 Both parsers implement explicit resource cleanup to prevent memory leaks in long-lived workers:
 
 **Fast Parser:**
-- Uses **two** `ProcessPoolExecutor` pools (ADR-0056) to eliminate priority
-  inversion between the latency-sensitive `/parse-pages` route and the
-  long-running `/parse` route:
-  - `executor` — full-document `/parse`, `WORKERS` workers
-    (= container vCPUs by default per ADR-0049).
-  - `pages_executor` — partial `/parse-pages`,
-    `max(2, WORKERS // 2)` workers.
-- Both pools recycle worker processes via `max_tasks_per_child` (env:
-  `WORKER_MAX_TASKS`, default 50) to release accumulated PyMuPDF memory.
-- Passes `pymupdf.Document` objects (not path strings) to control file handle lifecycle.
-- Calls `gc.collect()` before temp file cleanup.
 
-#### `/parse-pages` pool isolation, backpressure, metrics (ADR-0056)
+- Full documents and page previews use separate process pools, configured with
+  `WORKERS` and `PAGES_WORKERS` respectively.
+- Both pools recycle children after `WORKER_MAX_TASKS` completed tasks (default
+  50). Document handles close and garbage collection runs after each parse.
+- `MAX_INFLIGHT_DOCUMENTS` bounds requests across both routes before document
+  reads. Saturation returns HTTP 503 with `Retry-After: 2`. The shared cap does
+  not reserve preview slots even though execution pools are separate.
+- Each pool also checks pending work against its configurable backpressure
+  factor (default 2). That check uses a private executor attribute and falls
+  open if unavailable; the shared admission cap remains.
 
-`/parse-pages` is Stage 1 of the [ADR-004 two-stage pipeline](../../docs/architecture/decisions/0004-use-celery-for-async-document-parsing.md)
-and runs under a strict producer-side ceiling
-(`PARSER_PARTIAL_TIMEOUT_HARD=60s` in `backend-document`). When `/parse-pages`
-shared a pool with `/parse`, four concurrent multi-minute `/parse` calls
-could trivially queue every `/parse-pages` request behind them — a textbook
-priority inversion. The 2026-04-24 submodule bump (`f5b4192`) added default
-image extraction on `/parse`, raised average pool occupancy, and pushed the
-inversion past the producer timeout.
+#### Page-preview backpressure and metrics
 
-| Surface | Behaviour |
-|---------|-----------|
-| **Dedicated pool** | `pages_executor = ProcessPoolExecutor(max_workers=max(2, WORKERS // 2), max_tasks_per_child=MAX_TASKS)` declared at `fast/main.py`; only `/parse-pages` submits to it. |
-| **Backpressure (HTTP 503)** | When `len(pages_executor._pending_work_items) > PAGES_BACKPRESSURE_FACTOR × max_workers` (default 2×), `/parse-pages` returns `503 parse_pages_pool_saturated` immediately. `_pending_work_items` is a private CPython attribute wrapped in `try/except AttributeError` so the check fails *open* across versions. |
-| **Producer fall-through** | A 503 hands control back to `backend-document`, which writes the 0-byte `parsed/partial/content.md` sentinel (see `services/backend-document/README.md` § "Partial-parse sentinel contract") instead of holding the full 60 s connection. |
-| **Cooperative preemption** | ADR-0047 yield-at-page-boundary is **kept** as defence-in-depth on the shared `executor`. ADR-0056 makes structural isolation the primary mechanism; cooperative preemption is no longer the only line of defence. |
+`/parse-pages` uses the dedicated page pool. Callers choose bounded retry and
+backoff policies for their latency requirements. The service does not create
+queues, write sentinel objects or impose a four-attempt retry budget.
 
 Prometheus metrics exposed at `/metrics` (defensive `prometheus_client`
 import — service still boots if the wheel is absent in a stripped build):
@@ -598,24 +606,63 @@ import — service still boots if the wheel is absent in a stripped build):
 | `parse_pages_total_ms_seconds` | Histogram | End-to-end wall-clock latency at the `/parse-pages` route handler (entry → return). Buckets: 50 ms → 60 s. |
 | `parse_pages_backpressure_503_total` | Gauge (cumulative count) | Number of requests rejected with HTTP 503 due to pool saturation; rises when the inversion threshold is crossed. |
 
-#### `/parse` (Stage 2) admission control (ADR-0078)
+#### Full-document backpressure
 
-`/parse` (Stage 2, full document) runs on the shared `executor` and historically
-had **no** admission control — unlike `/parse-pages`, an over-driving caller could
-queue work *unbounded* inside the process pool, growing latency and memory instead
-of shedding load. This matters now that the upstream `celery-parser-worker` scales
-its in-flight concurrency on Redis queue depth (KEDA, ADR-0078). `/parse` now
-mirrors the ADR-0056 backpressure on its own pool:
-
-| Surface | Behaviour |
-|---------|-----------|
-| **Backpressure (HTTP 503)** | When `len(executor._pending_work_items) > PARSE_BACKPRESSURE_FACTOR × WORKERS` (default 2×), `/parse` returns `503 parse_pool_saturated` *before* the MinIO read. Same fail-open `try/except AttributeError` contract as `/parse-pages`. |
-| **Caller back-off** | `backend-document`'s `retry_sync_http_per_attempt` retries the 503 with jittered backoff while fast-parser's **CPU HPA** scales out more parse pods to absorb the offered concurrency. |
+`/parse` uses the full-document pool. Its pending-work check returns
+`503 parse_pool_saturated` before document retrieval when the queue exceeds
+`PARSE_BACKPRESSURE_FACTOR × WORKERS`. The shared admission cap also applies.
+Callers control retries and scaling without requiring a particular platform.
 
 | Metric | Type | Description |
 |--------|------|-------------|
 | `executor_queue_depth` | Gauge | Pending-work-item count for the shared `/parse` pool; sampled in the 503 check and on every `/metrics` scrape. |
 | `parse_backpressure_503_total` | Gauge (cumulative count) | Number of `/parse` requests rejected with HTTP 503 due to shared-pool saturation. |
+
+Runtime sizing variables:
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `WORKERS` | Detected CPU count | Full-document process workers |
+| `PAGES_WORKERS` | `max(2, WORKERS // 2)` | Page-preview process workers |
+| `MAX_INFLIGHT_DOCUMENTS` | `WORKERS + PAGES_WORKERS` | Combined admission bound per API process |
+| `WORKER_MAX_TASKS` | `50` | Completed tasks before child recycling |
+
+All values must be positive; invalid configuration fails startup.
+
+`MAX_INFLIGHT_DOCUMENTS` is a startup environment setting per API process.
+For example, `WORKERS=8 PAGES_WORKERS=2 MAX_INFLIGHT_DOCUMENTS=12` allows
+12 concurrent requests across the two routes. Without an explicit override,
+that worker configuration admits 10. The bound includes document reading and
+waiting for a worker; it does not reserve slots for either route or guarantee
+safe memory sizing. Select an explicit bound for your workload and memory budget.
+
+The parser is storage-independent through its direct upload interface. Callers
+can retrieve a PDF from any object store and send its bytes as multipart field
+`file` to either `/parse` or `/parse-pages`; callers also choose where to
+persist the returned output. Direct uploads do not access an object store.
+JSON bucket/key requests use the existing S3-compatible claim-check adapter;
+they do not implement every provider's native API. Admission applies to both
+input methods. The existing health response reports degraded when the optional
+storage adapter is unavailable, without preventing direct uploads.
+
+For the optional S3-compatible adapter, configure these existing environment
+variables (legacy names are retained for compatibility):
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `MINIO_ENDPOINT` | `minio:9000` | Object-store host and port, without a URL scheme |
+| `MINIO_ACCESS_KEY` | `MINIO_ROOT_USER`, then empty | Adapter access key |
+| `MINIO_SECRET_KEY` | `MINIO_ROOT_PASSWORD`, then empty | Adapter secret key |
+| `MINIO_SECURE` | `false` | Set to `true` for HTTPS |
+| `MINIO_HEALTH_TIMEOUT_SECONDS` | `1.5` | HTTP health handler's storage-check deadline in seconds |
+
+Supply credentials through your deployment's secret mechanism. Use HTTPS for
+remote storage and grant only the bucket access required by your callers.
+
+```bash
+curl -F 'file=@document.pdf' http://localhost:8004/parse
+curl -F 'file=@document.pdf' 'http://localhost:8004/parse-pages?start_page=0&end_page=3'
+```
 
 
 ## 🛠️ Troubleshooting

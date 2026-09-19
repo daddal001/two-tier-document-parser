@@ -1,10 +1,10 @@
-"""Fast-parser benchmark harness — ship gate for ADR-0049.
+"""Fast-parser benchmark harness — ship gate for .
 
 Captures latency + throughput across fixture sizes and concurrency levels
 and writes a JSON snapshot so pre/post-change deltas are grep-able.
 
 Usage:
-    pytest services/two_tier_document_parser/tests/perf/bench_parse.py --run-bench -q
+    pytest tests/perf/bench_parse.py --run-bench -q
 
 Without --run-bench the module exits as skipped so regular CI doesn't pay
 the multi-minute cost. Snapshots land under tests/perf/results/.

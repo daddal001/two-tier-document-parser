@@ -1,11 +1,11 @@
-"""Pydantic models for Fast Parser Service (ADR-0049)."""
+"""Pydantic models for Fast Parser Service ."""
 from typing import List, Optional
 
 from pydantic import BaseModel, Field
 
 
 class ImageData(BaseModel):
-    """Extracted image metadata — unified shape with accurate parser (ADR-0049).
+    """Extracted image metadata — unified shape with accurate parser .
 
     Populated by fast-parser's direct PyMuPDF API extraction (service.extract_images).
     SHA-256 content hash (first 16 chars) serves as ``image_id`` so the same image
@@ -38,8 +38,8 @@ class HealthResponse(BaseModel):
     no_gil: bool = Field(..., description="Whether Python no-GIL mode is enabled")
     parser: str = Field(default="pymupdf4llm", description="Parser library name")
     version: str = Field(default="1.0.0", description="Service version")
-    minio_connected: bool = Field(default=False, description="MinIO connectivity status")
-    layout_enabled: bool = Field(default=False, description="Whether pymupdf-layout GNN is active (ADR-0049)")
+    minio_connected: bool = Field(default=False, description="S3-compatible object storage connectivity status")
+    layout_enabled: bool = Field(default=False, description="Whether pymupdf-layout GNN is active ")
 
 
 class PageRangeMetadata(BaseModel):
@@ -60,5 +60,5 @@ class PageRangeParseResponse(BaseModel):
     metadata: PageRangeMetadata = Field(..., description="Page range parsing metadata")
     images: List[ImageData] = Field(
         default_factory=list,
-        description="Extracted images from the requested page range (ADR-0049 Stage 1 + Stage 2 unified).",
+        description="Extracted images from the requested page range (Stage 1 + Stage 2 unified).",
     )
