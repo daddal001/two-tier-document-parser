@@ -41,7 +41,7 @@ tracer = trace.get_tracer("parser.accurate")
 
 # Optional OpenTelemetry tracing (API-only, no-op without SDK)
 try:
-    from .core.telemetry import OTEL_AVAILABLE, get_tracer, traced_operation
+    from .core.telemetry import OTEL_AVAILABLE, traced_operation
 except ImportError:
     OTEL_AVAILABLE = False
 
@@ -70,9 +70,6 @@ except ImportError:
 
         return _noop()
 
-    def get_tracer():
-        return None
-
 
 def parse_pdf(pdf_bytes: bytes, filename: str) -> Dict[str, Any]:
     """Parse PDF using MinerU with automatic GPU fallback.
@@ -91,10 +88,7 @@ def parse_pdf(pdf_bytes: bytes, filename: str) -> Dict[str, Any]:
     """
     start_time = time.time()
     span_ctx = tracer.start_as_current_span("parse_pdf", attributes={"document_name": filename})
-    root_span = span_ctx.__enter__()
-
-    # Get tracer for manual span creation (telemetry module)
-    telem_tracer = get_tracer()
+    span_ctx.__enter__()
 
     # Initialize for safe cleanup in finally block (CWE-772 mitigation)
     pdf_doc = None

@@ -10,7 +10,8 @@ def test_fast_parser_health(fast_parser_url):
     response = requests.get(f"{fast_parser_url}/health", timeout=5)
     assert response.status_code == 200
     data = response.json()
-    assert data["status"] == "healthy"
+    # Without reachable object storage the service stays up but reports itself degraded.
+    assert data["status"] == ("healthy" if data["minio_connected"] else "degraded")
     assert "workers" in data
     assert "parser" in data
 

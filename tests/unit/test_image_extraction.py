@@ -21,8 +21,6 @@ import types
 from pathlib import Path
 from unittest.mock import MagicMock
 
-import pytest
-
 
 def _install_pymupdf_stub() -> None:
     if "pymupdf" not in sys.modules:

@@ -22,9 +22,7 @@ import gc
 import hashlib
 import logging
 import os
-import tempfile
 import time
-from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
 # activate PyMuPDF-Layout GNN BEFORE importing pymupdf4llm.
