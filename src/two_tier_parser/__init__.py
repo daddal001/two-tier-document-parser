@@ -18,6 +18,7 @@ Example:
     from two_tier_parser.accurate.service import parse_pdf
     result = parse_pdf(pdf_bytes, "document.pdf")
 """
+
 import logging
 
 __version__ = "1.0.0"

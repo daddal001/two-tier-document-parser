@@ -1,7 +1,9 @@
 """Pytest configuration and fixtures."""
-import pytest
+
 import tempfile
 from pathlib import Path
+
+import pytest
 
 # Test data directory
 TEST_DATA_DIR = Path(__file__).parent / "fixtures"
@@ -30,26 +32,26 @@ def single_page_pdf_path(sample_pdf_path):
             import PyPDF2 as pypdf
         except ImportError:
             pytest.skip("pypdf or PyPDF2 required for single-page PDF creation")
-    
+
     # Create temporary file for single-page PDF
-    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.pdf')
+    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
     temp_path = Path(temp_file.name)
     temp_file.close()
-    
+
     try:
         # Read original PDF and extract first page
         reader = pypdf.PdfReader(sample_pdf_path)
         if len(reader.pages) == 0:
             pytest.skip("Sample PDF has no pages")
-        
+
         # Create new PDF with only first page
         writer = pypdf.PdfWriter()
         writer.add_page(reader.pages[0])
-        
+
         # Write to temporary file
-        with open(temp_path, 'wb') as f:
+        with open(temp_path, "wb") as f:
             writer.write(f)
-        
+
         yield temp_path
     finally:
         # Clean up temporary file
@@ -67,4 +69,3 @@ def fast_parser_url():
 def accurate_parser_url():
     """Accurate parser service URL."""
     return "http://localhost:8005"
-

@@ -5,12 +5,11 @@ import os
 import subprocess
 import sys
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
-from concurrent.futures import ThreadPoolExecutor
 
 import pytest
-
 from starlette.requests import Request
 from starlette.responses import Response
 
@@ -55,9 +54,7 @@ def test_document_admission_rejects_before_route_when_saturated(monkeypatch):
         route_called = True
         return Response(status_code=200)
 
-    response = asyncio.run(
-        fast_main.bound_parser_inflight_documents(_request("/parse"), call_next)
-    )
+    response = asyncio.run(fast_main.bound_parser_inflight_documents(_request("/parse"), call_next))
 
     assert response.status_code == 503
     assert response.headers["retry-after"] == "2"
@@ -73,11 +70,17 @@ def test_admission_configuration_at_startup(override, expected):
     if override is not None:
         env["MAX_INFLIGHT_DOCUMENTS"] = override
     result = subprocess.run(
-        [sys.executable, "-c",
-         "from two_tier_parser.fast import main; "
-         f"assert main.MAX_INFLIGHT_DOCUMENTS == {expected}; "
-         "main.executor.shutdown(); main.pages_executor.shutdown()"],
-        env=env, capture_output=True, text=True, timeout=30,
+        [
+            sys.executable,
+            "-c",
+            "from two_tier_parser.fast import main; "
+            f"assert main.MAX_INFLIGHT_DOCUMENTS == {expected}; "
+            "main.executor.shutdown(); main.pages_executor.shutdown()",
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
     )
     assert result.returncode == 0, result.stderr
 
@@ -85,16 +88,26 @@ def test_admission_configuration_at_startup(override, expected):
 @pytest.mark.parametrize("route", ["/parse", "/parse-pages"])
 def test_multipart_routes_without_minio(monkeypatch, route):
     """HTTP uploads reach either parser without a storage dependency."""
+
     def storage_forbidden(*_args, **_kwargs):
         pytest.fail("A direct upload must not access MinIO")
 
     def parsed(pdf_bytes, filename, *_args):
         assert pdf_bytes == b"%PDF-fixture"
         assert filename == "document.pdf"
-        return {"markdown": "", "images": [], "metadata": {
-            "filename": filename, "total_pages": 1, "pages_parsed": 1, "pages": 1,
-            "start_page": 0, "end_page": 1, "processing_time_ms": 1,
-        }}
+        return {
+            "markdown": "",
+            "images": [],
+            "metadata": {
+                "filename": filename,
+                "total_pages": 1,
+                "pages_parsed": 1,
+                "pages": 1,
+                "start_page": 0,
+                "end_page": 1,
+                "processing_time_ms": 1,
+            },
+        }
 
     monkeypatch.setattr(fast_main, "read_file_from_minio", storage_forbidden)
     monkeypatch.setattr(fast_main, "check_minio_connectivity", storage_forbidden)
@@ -104,13 +117,14 @@ def test_multipart_routes_without_minio(monkeypatch, route):
     with ThreadPoolExecutor(max_workers=1) as pool:
         monkeypatch.setattr(fast_main, "executor", pool)
         monkeypatch.setattr(fast_main, "pages_executor", pool)
+
         async def upload():
             # Exercise the complete ASGI HTTP stack without a test-client
             # dependency or any external service.
             body = (
                 b'--fixture\r\nContent-Disposition: form-data; name="file"; '
                 b'filename="document.pdf"\r\nContent-Type: application/pdf\r\n'
-                b'\r\n%PDF-fixture\r\n--fixture--\r\n'
+                b"\r\n%PDF-fixture\r\n--fixture--\r\n"
             )
             scope = dict(_request(route).scope)
             scope["headers"] = [
@@ -136,7 +150,9 @@ def test_multipart_routes_without_minio(monkeypatch, route):
         response = asyncio.run(upload())
     import json
 
-    assert next(m["status"] for m in response if m["type"] == "http.response.start") == 200, response
+    assert (
+        next(m["status"] for m in response if m["type"] == "http.response.start") == 200
+    ), response
     payload = b"".join(m.get("body", b"") for m in response if m["type"] == "http.response.body")
     assert json.loads(payload)["markdown"] == ""
     assert fast_main._inflight_documents == 0
@@ -244,12 +260,19 @@ def test_full_parse_maps_worker_loss_to_retryable_503(monkeypatch):
 
     async def read_fixture(_request, *, stage1):
         assert stage1 is False
-        return b"pdf", "fixture.pdf", "fixture", None, 0, {
-            "extract_images_flag": False,
-            "image_max_count": 0,
-            "image_max_bytes": 0,
-            "image_max_pixels": 0,
-        }
+        return (
+            b"pdf",
+            "fixture.pdf",
+            "fixture",
+            None,
+            0,
+            {
+                "extract_images_flag": False,
+                "image_max_count": 0,
+                "image_max_bytes": 0,
+                "image_max_pixels": 0,
+            },
+        )
 
     class BrokenLoop:
         def run_in_executor(self, *_args):
@@ -286,9 +309,9 @@ def test_parse_pdf_basic(sample_pdf_path):
     """Test basic PDF parsing."""
     with open(sample_pdf_path, "rb") as f:
         pdf_bytes = f.read()
-    
+
     result = parse_pdf(pdf_bytes, sample_pdf_path.name)
-    
+
     assert "markdown" in result
     assert "metadata" in result
     assert isinstance(result["markdown"], str)
@@ -299,9 +322,9 @@ def test_parse_pdf_metadata(sample_pdf_path):
     """Test that metadata is correctly structured."""
     with open(sample_pdf_path, "rb") as f:
         pdf_bytes = f.read()
-    
+
     result = parse_pdf(pdf_bytes, sample_pdf_path.name)
-    
+
     metadata = result["metadata"]
     assert "pages" in metadata
     assert "processing_time_ms" in metadata
@@ -313,9 +336,9 @@ def test_parse_response_model(sample_pdf_path):
     """Test that result matches ParseResponse model."""
     with open(sample_pdf_path, "rb") as f:
         pdf_bytes = f.read()
-    
+
     result = parse_pdf(pdf_bytes, sample_pdf_path.name)
-    
+
     # Should be able to create ParseResponse from result
     response = ParseResponse(**result)
     assert response.markdown is not None
@@ -326,7 +349,7 @@ def test_parse_empty_pdf():
     """Test handling of empty PDF."""
     # Create minimal PDF bytes (this is a placeholder - actual test would need valid PDF)
     empty_bytes = b""
-    
+
     # This should raise an error or return empty result
     # Adjust based on actual implementation
     with pytest.raises(Exception):

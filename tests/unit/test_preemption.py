@@ -9,6 +9,7 @@ They verify:
   ``last_page_parsed`` cursor.
 - progress_ceiling disables preemption once enough pages are done.
 """
+
 from __future__ import annotations
 
 import sys
@@ -121,9 +122,7 @@ class TestPreemptionActive:
         assert meta["last_page_parsed"] == 0
         assert meta["start_page"] == 0
 
-    def test_progress_ceiling_ignores_cancel_when_nearly_done(
-        self, stub_pymupdf, monkeypatch
-    ):
+    def test_progress_ceiling_ignores_cancel_when_nearly_done(self, stub_pymupdf, monkeypatch):
         """When progress_ceiling is very low, cancel is ignored after the
         first few pages and parsing runs to completion."""
         # Cancel flag is permanent from first call.

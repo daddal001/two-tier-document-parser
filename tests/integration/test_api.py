@@ -1,4 +1,5 @@
 """Integration tests for API endpoints."""
+
 import pytest
 import requests
 
@@ -31,7 +32,7 @@ def test_fast_parser_parse(sample_pdf_path, fast_parser_url):
     with open(sample_pdf_path, "rb") as f:
         files = {"file": (sample_pdf_path.name, f, "application/pdf")}
         response = requests.post(f"{fast_parser_url}/parse", files=files, timeout=30)
-    
+
     assert response.status_code == 200
     data = response.json()
     assert "markdown" in data
@@ -46,11 +47,11 @@ def test_accurate_parser_parse(single_page_pdf_path, accurate_parser_url):
     with open(single_page_pdf_path, "rb") as f:
         files = {"file": (single_page_pdf_path.name, f, "application/pdf")}
         response = requests.post(
-            f"{accurate_parser_url}/parse", 
-            files=files, 
-            timeout=300  # Reduced timeout since we're only testing 1 page
+            f"{accurate_parser_url}/parse",
+            files=files,
+            timeout=300,  # Reduced timeout since we're only testing 1 page
         )
-    
+
     assert response.status_code == 200
     data = response.json()
     assert "markdown" in data
@@ -76,4 +77,3 @@ def test_accurate_parser_invalid_file(accurate_parser_url):
     files = {"file": ("test.txt", b"not a pdf", "text/plain")}
     response = requests.post(f"{accurate_parser_url}/parse", files=files, timeout=10)
     assert response.status_code == 400
-

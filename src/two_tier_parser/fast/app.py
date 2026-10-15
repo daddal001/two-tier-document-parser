@@ -8,6 +8,7 @@ New code should use:
 
 This module will be removed in a future version.
 """
+
 import warnings
 
 warnings.warn(

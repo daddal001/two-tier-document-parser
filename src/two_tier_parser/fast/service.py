@@ -16,6 +16,7 @@ Span hierarchy:
         ├── pdf.result_join
         └── tempfile.cleanup
 """
+
 import base64
 import gc
 import hashlib
@@ -92,9 +93,10 @@ def _is_cancelled(task_id: Optional[str]) -> bool:
     except Exception:
         return False
 
+
 # Optional OpenTelemetry tracing (API-only, no-op without SDK)
 try:
-    from .core.telemetry import traced_operation, OTEL_AVAILABLE
+    from .core.telemetry import OTEL_AVAILABLE, traced_operation
 except ImportError:
     OTEL_AVAILABLE = False
 
@@ -106,7 +108,7 @@ except ImportError:
         def _noop():
             logger.debug(
                 "Starting operation",
-                extra={"service_name": "fast-parser", "operation": name, **(attributes or {})}
+                extra={"service_name": "fast-parser", "operation": name, **(attributes or {})},
             )
             try:
                 yield None
@@ -114,12 +116,11 @@ except ImportError:
                 logger.error(
                     "Operation failed",
                     exc_info=True,
-                    extra={"service_name": "fast-parser", "operation": name}
+                    extra={"service_name": "fast-parser", "operation": name},
                 )
                 raise
             logger.debug(
-                "Completed operation",
-                extra={"service_name": "fast-parser", "operation": name}
+                "Completed operation", extra={"service_name": "fast-parser", "operation": name}
             )
 
         return _noop()
@@ -184,7 +185,9 @@ def extract_images(
             except Exception as exc:
                 logger.warning(
                     "extract_image failed for xref=%d on page %d: %s",
-                    xref, page_num, exc,
+                    xref,
+                    page_num,
+                    exc,
                     extra={"service_name": "fast-parser", "xref": xref, "page": page_num},
                 )
                 continue
@@ -231,7 +234,12 @@ def extract_images(
                 if bbox_rect.is_empty or bbox_rect.is_infinite:
                     bbox = None
                 else:
-                    bbox = [float(bbox_rect.x0), float(bbox_rect.y0), float(bbox_rect.x1), float(bbox_rect.y1)]
+                    bbox = [
+                        float(bbox_rect.x0),
+                        float(bbox_rect.y0),
+                        float(bbox_rect.x1),
+                        float(bbox_rect.y1),
+                    ]
             except Exception:
                 bbox = None
 
@@ -294,7 +302,9 @@ def parse_pdf(
         plus ``preempted`` and ``last_page_parsed`` when preempted.
     """
     start_time = time.time()
-    parse_span_ctx = tracer.start_as_current_span("parse_pdf", attributes={"service_name": "fast-parser", "document_name": filename})
+    parse_span_ctx = tracer.start_as_current_span(
+        "parse_pdf", attributes={"service_name": "fast-parser", "document_name": filename}
+    )
     parse_span_ctx.__enter__()
 
     import pymupdf
@@ -303,7 +313,9 @@ def parse_pdf(
     # stream=bytes since 1.14.13. Single open (previously this function opened
     # the file 3 times: page count, full parse, fallback). Reuse one handle
     # for the entire request to save ~2× open overhead on small docs.
-    with traced_operation("pdf.load", {"file_name": filename, "pdf_size_bytes": len(pdf_bytes)}) as span:
+    with traced_operation(
+        "pdf.load", {"file_name": filename, "pdf_size_bytes": len(pdf_bytes)}
+    ) as span:
         doc = pymupdf.open(stream=pdf_bytes, filetype="pdf")
         total_pages = len(doc)
         if span:
@@ -311,7 +323,11 @@ def parse_pdf(
             span.set_attribute("pdf_size_bytes", len(pdf_bytes))
         logger.debug(
             "PDF loaded",
-            extra={"service_name": "fast-parser", "page_count": total_pages, "document_name": filename}
+            extra={
+                "service_name": "fast-parser",
+                "page_count": total_pages,
+                "document_name": filename,
+            },
         )
 
     try:
@@ -323,13 +339,16 @@ def parse_pdf(
         last_page_parsed = -1
 
         if task_id is not None:
-            with traced_operation("pdf.preemptable_parse", {
-                "file_name": filename,
-                "total_pages": total_pages,
-                "mode": "page_by_page_preemptable",
-                "task_id": task_id,
-                "start_page": start_page,
-            }) as preempt_span:
+            with traced_operation(
+                "pdf.preemptable_parse",
+                {
+                    "file_name": filename,
+                    "total_pages": total_pages,
+                    "mode": "page_by_page_preemptable",
+                    "task_id": task_id,
+                    "start_page": start_page,
+                },
+            ) as preempt_span:
                 markdown_parts = []
                 deadline_truncated = False
                 effective_start = max(0, min(start_page, total_pages))
@@ -375,8 +394,10 @@ def parse_pdf(
                         last_page_parsed = page_num
                     except (AttributeError, ValueError) as page_error:
                         page_error_msg = str(page_error)
-                        if "'NoneType' object has no attribute 'tables'" in page_error_msg or \
-                           "not a textpage" in page_error_msg:
+                        if (
+                            "'NoneType' object has no attribute 'tables'" in page_error_msg
+                            or "not a textpage" in page_error_msg
+                        ):
                             skipped_pages.append(page_num + 1)
                             markdown_parts.append(
                                 f"\n\n---\n**[Page {page_num + 1} skipped due to parsing error]**\n---\n\n"
@@ -390,20 +411,30 @@ def parse_pdf(
                     preempt_span.set_attribute("preempted", preempted)
                     preempt_span.set_attribute("deadline_truncated", deadline_truncated)
                     preempt_span.set_attribute("last_page_parsed", last_page_parsed)
-                    preempt_span.set_attribute("pages_parsed", last_page_parsed - effective_start + 1 if last_page_parsed >= 0 else 0)
+                    preempt_span.set_attribute(
+                        "pages_parsed",
+                        last_page_parsed - effective_start + 1 if last_page_parsed >= 0 else 0,
+                    )
                     preempt_span.set_attribute("markdown_length", len(markdown_text))
         else:
             # Full-document fast path. Layout GNN (if enabled) kicks in here.
             try:
-                with traced_operation("pdf.fast_parse", {
-                    "file_name": filename,
-                    "total_pages": total_pages,
-                    "mode": "full_document",
-                }) as span:
+                with traced_operation(
+                    "pdf.fast_parse",
+                    {
+                        "file_name": filename,
+                        "total_pages": total_pages,
+                        "mode": "full_document",
+                    },
+                ) as span:
                     markdown_text = pymupdf4llm.to_markdown(doc)
                     logger.info(
                         "Fast parse succeeded",
-                        extra={"service_name": "fast-parser", "document_name": filename, "page_count": total_pages}
+                        extra={
+                            "service_name": "fast-parser",
+                            "document_name": filename,
+                            "page_count": total_pages,
+                        },
                     )
                     if span:
                         span.set_attribute("parse_mode", "full_document")
@@ -414,32 +445,42 @@ def parse_pdf(
                 # - AttributeError: "'NoneType' object has no attribute 'tables'"
                 # - ValueError: "not a textpage of this page" (threading issue)
                 error_msg = str(e)
-                if "'NoneType' object has no attribute 'tables'" in error_msg or \
-                   "not a textpage" in error_msg:
+                if (
+                    "'NoneType' object has no attribute 'tables'" in error_msg
+                    or "not a textpage" in error_msg
+                ):
 
                     logger.warning(
                         "Fast parse failed, falling back to page-by-page",
-                        extra={"service_name": "fast-parser", "document_name": filename, "error_type": type(e).__name__, "error_message": error_msg[:100]}
+                        extra={
+                            "service_name": "fast-parser",
+                            "document_name": filename,
+                            "error_type": type(e).__name__,
+                            "error_message": error_msg[:100],
+                        },
                     )
 
-                    with traced_operation("pdf.page_by_page_parse", {
-                        "file_name": filename,
-                        "total_pages": total_pages,
-                        "mode": "page_by_page",
-                        "fallback_reason": error_msg[:100],
-                    }) as fallback_span:
+                    with traced_operation(
+                        "pdf.page_by_page_parse",
+                        {
+                            "file_name": filename,
+                            "total_pages": total_pages,
+                            "mode": "page_by_page",
+                            "fallback_reason": error_msg[:100],
+                        },
+                    ) as fallback_span:
                         markdown_parts = []
                         for page_num in range(total_pages):
-                            with traced_operation(f"pdf.page[{page_num}].parse", {
-                                "page": page_num,
-                                "total_pages": total_pages,
-                            }) as page_span:
+                            with traced_operation(
+                                f"pdf.page[{page_num}].parse",
+                                {
+                                    "page": page_num,
+                                    "total_pages": total_pages,
+                                },
+                            ) as page_span:
                                 try:
                                     # Parse single page — reuse single doc handle.
-                                    page_md = pymupdf4llm.to_markdown(
-                                        doc,
-                                        pages=[page_num]
-                                    )
+                                    page_md = pymupdf4llm.to_markdown(doc, pages=[page_num])
                                     markdown_parts.append(page_md)
 
                                     if page_span:
@@ -449,8 +490,11 @@ def parse_pdf(
                                 except (AttributeError, ValueError) as page_error:
                                     # Skip this problematic page
                                     page_error_msg = str(page_error)
-                                    if "'NoneType' object has no attribute 'tables'" in page_error_msg or \
-                                       "not a textpage" in page_error_msg:
+                                    if (
+                                        "'NoneType' object has no attribute 'tables'"
+                                        in page_error_msg
+                                        or "not a textpage" in page_error_msg
+                                    ):
                                         skipped_pages.append(page_num + 1)  # 1-indexed for user
                                         # Add placeholder for skipped page
                                         markdown_parts.append(
@@ -463,7 +507,7 @@ def parse_pdf(
                                                 "document_name": filename,
                                                 "page": page_num + 1,
                                                 "error_message": page_error_msg[:50],
-                                            }
+                                            },
                                         )
 
                                         if page_span:
@@ -475,7 +519,9 @@ def parse_pdf(
                         markdown_text = "\n\n".join(markdown_parts)
 
                         if fallback_span:
-                            fallback_span.set_attribute("pages_parsed", total_pages - len(skipped_pages))
+                            fallback_span.set_attribute(
+                                "pages_parsed", total_pages - len(skipped_pages)
+                            )
                             fallback_span.set_attribute("pages_skipped", len(skipped_pages))
                             fallback_span.set_attribute("markdown_length", len(markdown_text))
                 else:
@@ -490,8 +536,8 @@ def parse_pdf(
                 "processing_time_ms": processing_time_ms,
                 "parser": "pymupdf4llm",
                 "version": "0.2.0",
-                "filename": filename
-            }
+                "filename": filename,
+            },
         }
 
         # preemption: report partial-progress state so main.py can
@@ -504,7 +550,9 @@ def parse_pdf(
         # Add skipped pages info if any
         if skipped_pages:
             result["metadata"]["skipped_pages"] = skipped_pages
-            result["metadata"]["warning"] = f"Skipped {len(skipped_pages)} page(s) due to parsing errors"
+            result["metadata"][
+                "warning"
+            ] = f"Skipped {len(skipped_pages)} page(s) due to parsing errors"
             logger.warning(
                 "Parse completed with skipped pages",
                 extra={
@@ -513,19 +561,22 @@ def parse_pdf(
                     "skipped_pages": skipped_pages,
                     "skipped_count": len(skipped_pages),
                     "page_count": total_pages,
-                }
+                },
             )
 
         # extract images from the same open doc handle before close.
         images: List[Dict[str, Any]] = []
         images_truncated: Optional[str] = None
         if extract_images_flag:
-            with traced_operation("pdf.extract_images", {
-                "file_name": filename,
-                "max_count": image_max_count,
-                "max_bytes": image_max_bytes,
-                "max_pixels": image_max_pixels,
-            }) as img_span:
+            with traced_operation(
+                "pdf.extract_images",
+                {
+                    "file_name": filename,
+                    "max_count": image_max_count,
+                    "max_bytes": image_max_bytes,
+                    "max_pixels": image_max_pixels,
+                },
+            ) as img_span:
                 # Only extract from pages that were actually parsed; respects
                 # preempt (we don't want to pay for pages we bailed on).
                 if task_id is not None and last_page_parsed >= 0:
@@ -564,7 +615,7 @@ def parse_pdf(
                 "markdown_length": len(markdown_text),
                 "image_count": len(images),
                 "images_truncated": images_truncated,
-            }
+            },
         )
 
         return result
@@ -612,13 +663,18 @@ def parse_pdf_page_range(
         - end_page: Actual end page used (after clamping)
     """
     start_time = time.time()
-    range_span_ctx = tracer.start_as_current_span("parse_pdf_page_range", attributes={"service_name": "fast-parser", "document_name": filename})
+    range_span_ctx = tracer.start_as_current_span(
+        "parse_pdf_page_range",
+        attributes={"service_name": "fast-parser", "document_name": filename},
+    )
     range_span_ctx.__enter__()
 
     import pymupdf
 
     # BytesIO input, single doc handle (was: tempfile + 2 opens).
-    with traced_operation("pdf.load", {"file_name": filename, "mode": "page_range", "pdf_size_bytes": len(pdf_bytes)}) as span:
+    with traced_operation(
+        "pdf.load", {"file_name": filename, "mode": "page_range", "pdf_size_bytes": len(pdf_bytes)}
+    ) as span:
         doc = pymupdf.open(stream=pdf_bytes, filetype="pdf")
         total_pages = len(doc)
         if span:
@@ -649,7 +705,7 @@ def parse_pdf_page_range(
                     "start_page": start_page,
                     "end_page": end_page,
                     "page_count": total_pages,
-                }
+                },
             )
             return {
                 "markdown": "",
@@ -665,13 +721,16 @@ def parse_pdf_page_range(
                 },
             }
 
-        with traced_operation("pdf.page_range_parse", {
-            "file_name": filename,
-            "start_page": start_page,
-            "end_page": end_page,
-            "pages_count": len(pages_to_parse),
-            "total_pages": total_pages,
-        }) as span:
+        with traced_operation(
+            "pdf.page_range_parse",
+            {
+                "file_name": filename,
+                "start_page": start_page,
+                "end_page": end_page,
+                "pages_count": len(pages_to_parse),
+                "total_pages": total_pages,
+            },
+        ) as span:
             markdown_text = pymupdf4llm.to_markdown(
                 doc,
                 pages=pages_to_parse,
@@ -693,7 +752,7 @@ def parse_pdf_page_range(
                 "end_page": end_page,
                 "duration_ms": processing_time_ms,
                 "markdown_length": len(markdown_text),
-            }
+            },
         )
 
         # image extraction for Stage 1 partial parses — tighter caps
@@ -701,11 +760,14 @@ def parse_pdf_page_range(
         images: List[Dict[str, Any]] = []
         images_truncated: Optional[str] = None
         if extract_images_flag:
-            with traced_operation("pdf.extract_images", {
-                "file_name": filename,
-                "mode": "page_range",
-                "max_count": image_max_count,
-            }) as img_span:
+            with traced_operation(
+                "pdf.extract_images",
+                {
+                    "file_name": filename,
+                    "mode": "page_range",
+                    "max_count": image_max_count,
+                },
+            ) as img_span:
                 extract_result = extract_images(
                     doc,
                     page_range=pages_to_parse,

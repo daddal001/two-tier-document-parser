@@ -1,17 +1,17 @@
 """Tests for Pydantic models."""
-from pathlib import Path
+
 import sys
+from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from two_tier_parser.fast.models import ParseResponse as FastParseResponse, HealthResponse as FastHealthResponse
-from two_tier_parser.accurate.models import (
-    ParseResponse as AccurateParseResponse,
-    HealthResponse as AccurateHealthResponse,
-    ImageData,
-    TableData,
-    FormulaData
-)
+from two_tier_parser.accurate.models import FormulaData
+from two_tier_parser.accurate.models import HealthResponse as AccurateHealthResponse
+from two_tier_parser.accurate.models import ImageData
+from two_tier_parser.accurate.models import ParseResponse as AccurateParseResponse
+from two_tier_parser.accurate.models import TableData
+from two_tier_parser.fast.models import HealthResponse as FastHealthResponse
+from two_tier_parser.fast.models import ParseResponse as FastParseResponse
 
 
 def test_fast_parse_response():
@@ -22,8 +22,8 @@ def test_fast_parse_response():
             "pages": 1,
             "processing_time_ms": 100,
             "parser": "pymupdf4llm",
-            "version": "1.0.0"
-        }
+            "version": "1.0.0",
+        },
     )
     assert response.markdown == "# Test\n\nContent"
     assert response.metadata["pages"] == 1
@@ -31,11 +31,7 @@ def test_fast_parse_response():
 
 def test_fast_health_response():
     """Test Fast HealthResponse model."""
-    response = FastHealthResponse(
-        status="healthy",
-        workers=4,
-        no_gil=True
-    )
+    response = FastHealthResponse(status="healthy", workers=4, no_gil=True)
     assert response.status == "healthy"
     assert response.workers == 4
     assert response.no_gil is True
@@ -53,11 +49,11 @@ def test_accurate_parse_response():
             "gpu_used": True,
             "accuracy_tier": "very-high",
             "version": "1.0.0",
-            "filename": "test.pdf"
+            "filename": "test.pdf",
         },
         images=[],
         tables=[],
-        formulas=[]
+        formulas=[],
     )
     assert response.markdown == "# Test\n\nContent"
     assert len(response.images) == 0
@@ -71,11 +67,7 @@ def test_accurate_parse_response():
 
 def test_accurate_health_response():
     """Test Accurate HealthResponse model."""
-    response = AccurateHealthResponse(
-        status="healthy",
-        workers=2,
-        gpu_available=True
-    )
+    response = AccurateHealthResponse(status="healthy", workers=2, gpu_available=True)
     assert response.status == "healthy"
     assert response.workers == 2
     assert response.gpu_available is True
@@ -84,10 +76,7 @@ def test_accurate_health_response():
 def test_image_data():
     """Test ImageData model."""
     image = ImageData(
-        image_id="img_1",
-        image_base64="base64data",
-        page=1,
-        bbox=[0.0, 0.0, 100.0, 100.0]
+        image_id="img_1", image_base64="base64data", page=1, bbox=[0.0, 0.0, 100.0, 100.0]
     )
     assert image.image_id == "img_1"
     assert image.page == 1
@@ -100,7 +89,7 @@ def test_table_data():
         table_id="table_1",
         markdown="| Col |\n|-----|\n| Val |",
         page=1,
-        bbox=[0.0, 0.0, 200.0, 100.0]
+        bbox=[0.0, 0.0, 200.0, 100.0],
     )
     assert table.table_id == "table_1"
     assert "Col" in table.markdown
@@ -109,11 +98,7 @@ def test_table_data():
 def test_formula_data():
     """Test FormulaData model."""
     formula = FormulaData(
-        formula_id="formula_1",
-        latex="x^2 + y^2 = z^2",
-        page=1,
-        bbox=[0.0, 0.0, 50.0, 50.0]
+        formula_id="formula_1", latex="x^2 + y^2 = z^2", page=1, bbox=[0.0, 0.0, 50.0, 50.0]
     )
     assert formula.formula_id == "formula_1"
     assert "^2" in formula.latex
-

@@ -11,6 +11,7 @@ Document so they run offline without the real pymupdf install. The hot-path
 ``parse_pdf`` integration is covered by tests/perf/bench_parse.py and the
 existing integration tests.
 """
+
 from __future__ import annotations
 
 import base64
@@ -39,7 +40,6 @@ _install_pymupdf_stub()
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
 
 from two_tier_parser.fast.service import extract_images  # noqa: E402
-
 
 # ------------------------- doc stub machinery --------------------------
 
@@ -159,11 +159,13 @@ def test_max_bytes_cap_truncates_with_reason():
     big1 = b"a" * (1024 * 1024)
     big2 = b"b" * (1024 * 1024)
     big3 = b"c" * (1024 * 1024)
-    pages = [[
-        {"xref": 1, "bytes": big1, "ext": "png"},
-        {"xref": 2, "bytes": big2, "ext": "png"},
-        {"xref": 3, "bytes": big3, "ext": "png"},
-    ]]
+    pages = [
+        [
+            {"xref": 1, "bytes": big1, "ext": "png"},
+            {"xref": 2, "bytes": big2, "ext": "png"},
+            {"xref": 3, "bytes": big3, "ext": "png"},
+        ]
+    ]
     doc = _StubDoc(pages)
 
     # Cap at 2 MB + 1 — first two fit (2 MB exactly), third would break cap.
@@ -175,13 +177,17 @@ def test_max_bytes_cap_truncates_with_reason():
 
 def test_max_pixels_cap_triggers_pixel_flood_protection():
     # OWASP ASVS V12.2 / ASVS#1740 — pixel-flood DoS mitigation.
-    pages = [[{
-        "xref": 1,
-        "bytes": b"tiny-but-claims-big",
-        "ext": "png",
-        "width": 100_000,
-        "height": 100_000,  # 10 billion pixels
-    }]]
+    pages = [
+        [
+            {
+                "xref": 1,
+                "bytes": b"tiny-but-claims-big",
+                "ext": "png",
+                "width": 100_000,
+                "height": 100_000,  # 10 billion pixels
+            }
+        ]
+    ]
     doc = _StubDoc(pages)
 
     result = extract_images(doc, max_count=10, max_bytes=10**8, max_pixels=50_000_000)
@@ -191,14 +197,18 @@ def test_max_pixels_cap_triggers_pixel_flood_protection():
 
 
 def test_bbox_fallback_when_get_image_bbox_raises():
-    pages = [[{
-        "xref": 1,
-        "bytes": b"masked-image" * 50,
-        "ext": "png",
-        "width": 100,
-        "height": 100,
-        "raise_bbox": True,
-    }]]
+    pages = [
+        [
+            {
+                "xref": 1,
+                "bytes": b"masked-image" * 50,
+                "ext": "png",
+                "width": 100,
+                "height": 100,
+                "raise_bbox": True,
+            }
+        ]
+    ]
     doc = _StubDoc(pages)
 
     result = extract_images(doc)
@@ -228,10 +238,12 @@ def test_page_range_subset():
 
 
 def test_respects_mime_extension():
-    pages = [[
-        {"xref": 1, "bytes": b"jp" * 100, "ext": "jpeg"},
-        {"xref": 2, "bytes": b"ti" * 100, "ext": "tiff"},
-    ]]
+    pages = [
+        [
+            {"xref": 1, "bytes": b"jp" * 100, "ext": "jpeg"},
+            {"xref": 2, "bytes": b"ti" * 100, "ext": "tiff"},
+        ]
+    ]
     doc = _StubDoc(pages)
     result = extract_images(doc)
     mimes = {im["mime"] for im in result["images"]}
