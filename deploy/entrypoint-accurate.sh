@@ -19,7 +19,7 @@ else
     echo "⚠️ Models not found in image. This should not happen if build completed successfully."
     echo "   Models should have been pre-downloaded during Docker build."
     echo "   Attempting fallback download (this may take 10-20 minutes)..."
-    
+
     # Fallback: download models if somehow missing
     python3 -m mineru.cli.models_download -s huggingface -m all || \
     python3 -c "from mineru.cli.models_download import download_models; download_models('huggingface', 'all')" || \
@@ -36,4 +36,3 @@ exec python3 -m uvicorn two_tier_parser.accurate.main:app \
     --host 0.0.0.0 \
     --port 8005 \
     --timeout-keep-alive 600
-

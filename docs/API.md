@@ -137,17 +137,17 @@ with open('document.pdf', 'rb') as f:
     files = {'file': f}
     # Increase timeout for processing (especially for GPU/VLM mode)
     response = requests.post(
-        'http://localhost:8005/parse', 
-        files=files, 
+        'http://localhost:8005/parse',
+        files=files,
         timeout=600
     )
     result = response.json()
-    
+
     # Check which backend was used
     backend = result['metadata']['backend']
     gpu_used = result['metadata']['gpu_used']
     print(f"Backend: {backend}, GPU: {gpu_used}")
-    
+
     print(result['markdown'])
     print(f"Extracted {len(result['images'])} images")
     print(f"Extracted {len(result['tables'])} tables")
@@ -255,35 +255,35 @@ import requests
 from typing import Optional
 
 class DocumentParser:
-    def __init__(self, fast_url: str = "http://localhost:8004", 
+    def __init__(self, fast_url: str = "http://localhost:8004",
                  accurate_url: str = "http://localhost:8005"):
         self.fast_url = fast_url
         self.accurate_url = accurate_url
-    
+
     def parse_fast(self, pdf_path: str) -> dict:
         """Parse using fast parser."""
         with open(pdf_path, 'rb') as f:
             files = {'file': f}
             response = requests.post(
-                f"{self.fast_url}/parse", 
-                files=files, 
+                f"{self.fast_url}/parse",
+                files=files,
                 timeout=30
             )
             response.raise_for_status()
             return response.json()
-    
+
     def parse_accurate(self, pdf_path: str) -> dict:
         """Parse using accurate parser."""
         with open(pdf_path, 'rb') as f:
             files = {'file': f}
             response = requests.post(
-                f"{self.accurate_url}/parse", 
-                files=files, 
+                f"{self.accurate_url}/parse",
+                files=files,
                 timeout=600
             )
             response.raise_for_status()
             return response.json()
-    
+
     def health_check(self) -> dict:
         """Check health of both services."""
         return {
@@ -300,4 +300,3 @@ print(result['markdown'])
 ---
 
 For more information, see the [README](../README.md) or visit the interactive API docs at `/docs` on each service.
-

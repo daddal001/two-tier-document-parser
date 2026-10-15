@@ -123,24 +123,24 @@ the `accurate` extra alone does not install the complete MinerU runtime.
 ```mermaid
 graph TD
     Client[Client / RAG Pipeline]
-    
+
     subgraph "Docker Host"
         Fast[Fast Parser Service<br/>Port 8004<br/>CPU-Only]
         Accurate[Accurate Parser Service<br/>Port 8005<br/>Auto-Detects Hardware]
     end
-    
+
     Client -->|POST /parse<br/>Quick Text| Fast
     Client -->|POST /parse<br/>Deep Extraction| Accurate
-    
+
     Fast -->|PyMuPDF4LLM| CPU1[CPU]
-    
+
     Accurate -->|Auto-Detect| Decision{GPU<br/>Available?}
     Decision -->|Yes| Transformers[Transformers Backend<br/>MinerU VLM Model<br/>95%+ Accuracy]
     Decision -->|No| Pipeline[Pipeline Backend<br/>Traditional CV Models<br/>80-85% Accuracy]
-    
+
     Transformers -->|Uses| GPU[NVIDIA GPU<br/>Tesla T4 / Ampere+]
     Pipeline -->|Uses| CPU2[CPU<br/>Traditional CV Models]
-    
+
     style Fast fill:#2563eb,stroke:#1e40af,stroke-width:3px,color:#fff
     style Accurate fill:#ea580c,stroke:#c2410c,stroke-width:3px,color:#fff
     style Decision fill:#9333ea,stroke:#7e22ce,stroke-width:3px,color:#fff
@@ -357,8 +357,8 @@ def parse_accurate(pdf_path: str) -> dict:
         files = {'file': f}
         # Note: Increase timeout for VLM processing
         response = requests.post(
-            'http://localhost:8005/parse', 
-            files=files, 
+            'http://localhost:8005/parse',
+            files=files,
             timeout=6000
         )
         return response.json()
@@ -407,7 +407,7 @@ See `examples/notebooks/parser_visualization.ipynb` for an interactive example w
 
 **Hardware Notes:**
 - **Fast Parser**: Scales with CPU cores (Python no-GIL mode enabled for true parallelism). Tested on 4-core systems.
-- **Accurate Parser (GPU)**: 
+- **Accurate Parser (GPU)**:
   - **Tesla T4 / Turing GPUs (CC 7.5)**: Uses `transformers` backend for universal compatibility. VRAM configured for 15GB.
   - **Ampere+ GPUs (A10, A100, RTX 3090+, CC 8.0+)**: Also uses `transformers` backend (current implementation). Future vLLM engine support could provide 2-3x speedup.
 - **Accurate Parser (CPU Fallback)**: Automatically uses `pipeline` backend with OCR and traditional CV models when no GPU detected. Performs comparably to GPU mode in time but uses different inference approach. Multi-core CPUs (8+ cores) recommended for better throughput.
@@ -450,7 +450,7 @@ The **accurate parser automatically detects GPU availability** and falls back gr
 **GPU is completely optional!** Both parsers work on any hardware:
 
 - **Fast Parser**: Always uses CPU (no GPU needed)
-- **Accurate Parser**: 
+- **Accurate Parser**:
   - ✅ **Automatically detects and adapts** to available hardware
   - With GPU: Uses VLM mode (95%+ accuracy) - NVIDIA Tesla T4, A10, A100, RTX 3090+
   - Without GPU: Uses Pipeline mode (80-85% accuracy) - any CPU
