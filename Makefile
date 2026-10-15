@@ -1,4 +1,6 @@
-.PHONY: build up down logs clean test lint format type-check coverage help
+.PHONY: help install dev build build-accurate up down logs clean clean-volumes test test-unit test-integration test-coverage lint format type-check coverage check hooks
+
+.DEFAULT_GOAL := help
 
 COMPOSE_FILE := deploy/docker-compose.yml
 # Increase timeout for model downloads during build (10-20 minutes)
@@ -25,69 +27,84 @@ logs:
 
 # Development commands
 test:
-	pytest tests/ -v
+	pytest tests/ -v -m "not integration and not models"
 
 test-unit:
-	pytest tests/unit/ -v
+	pytest tests/unit/ -v -m "not models"
 
 test-integration:
-	pytest tests/integration/ -v -m integration
+	pytest tests/integration/ -v -m integration --run-integration
 
 test-coverage:
-	pytest tests/ --cov=src/two_tier_parser --cov-report=html --cov-report=term
+	pytest tests/ -m "not integration and not models" --cov=src/two_tier_parser --cov-report=html --cov-report=term
 
 lint:
-	flake8 src/ tests/ --max-line-length=100 --extend-ignore=E203,W503
+	flake8 src/ tests/ examples/ scripts/
 	@echo "✓ Linting complete"
 
 format:
-	black src/ tests/ examples/ --line-length=100
-	isort src/ tests/ examples/ --profile=black --line-length=100
+	black src/ tests/ examples/ scripts/ --line-length=100
+	isort src/ tests/ examples/ scripts/ --profile=black --line-length=100
 	@echo "✓ Formatting complete"
 
 type-check:
-	mypy src/two_tier_parser/ --ignore-missing-imports
+	mypy src/
 	@echo "✓ Type checking complete"
 
 coverage: test-coverage
 	@echo "Coverage report generated in htmlcov/index.html"
 
-# Cleanup commands
+# Only this project's containers and Python caches; volumes need an explicit command.
 clean:
-	@echo "Stopping all containers..."
-	docker stop fast-parser accurate-parser 2>/dev/null || true
-	docker rm fast-parser accurate-parser 2>/dev/null || true
-	docker-compose -f $(COMPOSE_FILE) down -v 2>/dev/null || true
-	@echo "Removing all Docker networks..."
-	docker network rm document-parser-network 2>/dev/null || true
-	@echo "Pruning Docker system (images, containers, networks, volumes, build cache)..."
-	docker system prune -a --volumes -f
-	@echo "Cleaning Python artifacts..."
-	find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
-	find . -type d -name "*.egg-info" -exec rm -rf {} + 2>/dev/null || true
-	find . -type f -name "*.pyc" -delete 2>/dev/null || true
-	find . -type d -name ".pytest_cache" -exec rm -rf {} + 2>/dev/null || true
-	find . -type d -name ".mypy_cache" -exec rm -rf {} + 2>/dev/null || true
-	find . -type d -name "htmlcov" -exec rm -rf {} + 2>/dev/null || true
-	@echo "✓ Complete cleanup finished - all Docker resources removed"
+	docker-compose -f $(COMPOSE_FILE) down --remove-orphans
+	find . -type d \( -name "__pycache__" -o -name ".pytest_cache" -o -name ".mypy_cache" -o -name "htmlcov" \) -not -path "./MinerU/*" -not -path "./.git/*" -prune -exec rm -rf {} +
+	find . -type d -name "*.egg-info" -not -path "./MinerU/*" -prune -exec rm -rf {} +
+
+clean-volumes:
+	docker-compose -f $(COMPOSE_FILE) down --volumes --remove-orphans
+
+check:
+	black --check src/ tests/ examples/ scripts/
+	isort --check-only src/ tests/ examples/ scripts/ --profile black
+	flake8 src/ tests/ examples/ scripts/
+	mypy src/
+
+# Install the local git hooks (commit and commit-message stages)
+hooks:
+	pre-commit install --hook-type pre-commit --hook-type commit-msg
+
+# Environment setup
+# Installs exactly the versions in uv.lock into ./.venv (requires uv). Activate it with
+# `source .venv/bin/activate` so the pre-commit hooks and make targets find the tools.
+install:
+	uv sync --extra fast --extra dev --extra cancellation
+	@echo "Activate the environment: source .venv/bin/activate"
+
+dev: install hooks
 
 # Help
 help:
-	@echo "Available commands:"
-	@echo "  make build          - Build all Docker images (accurate-parser: ~10-20 min)"
-	@echo "  make build-accurate - Build only accurate-parser (includes model download)"
-	@echo "  make up             - Start services (builds if needed)"
-	@echo "  make down           - Stop services"
-	@echo "  make logs           - View service logs"
+	@echo "Setup"
+	@echo "  make install          - Create ./.venv from uv.lock (fast, dev and cancellation extras)"
+	@echo "  make hooks            - Install the git pre-commit and commit-msg hooks"
+	@echo "  make dev              - install + hooks"
 	@echo ""
-	@echo "Note: COMPOSE_HTTP_TIMEOUT is set to 1800s (30 min) for model downloads"
-	@echo "  make test           - Run all tests"
-	@echo "  make test-unit      - Run unit tests only"
-	@echo "  make test-integration - Run integration tests only"
-	@echo "  make test-coverage  - Run tests with coverage report"
-	@echo "  make lint           - Run linting checks"
-	@echo "  make format         - Format code with Black and isort"
-	@echo "  make type-check     - Run type checking with mypy"
-	@echo "  make coverage       - Generate coverage report"
-	@echo "  make clean          - Clean build artifacts and caches"
-	@echo "  make help           - Show this help message"
+	@echo "Docker (COMPOSE_HTTP_TIMEOUT is 1800s for model downloads)"
+	@echo "  make build            - Build all Docker images (accurate-parser: ~10-20 min)"
+	@echo "  make build-accurate   - Build only accurate-parser (includes model download)"
+	@echo "  make up               - Start services (builds if needed)"
+	@echo "  make down             - Stop services"
+	@echo "  make logs             - View service logs"
+	@echo ""
+	@echo "Quality"
+	@echo "  make test             - Unit and contract tests (no live services, no models)"
+	@echo "  make test-unit        - Unit tests only"
+	@echo "  make test-integration - Tests against running services"
+	@echo "  make test-coverage    - Tests with coverage report"
+	@echo "  make check            - black, isort, flake8 and mypy (CI also runs every pre-commit hook)"
+	@echo "  make lint             - flake8"
+	@echo "  make format           - Format code with black and isort"
+	@echo "  make type-check       - mypy"
+	@echo "  make clean            - Stop this project's containers and delete Python caches"
+	@echo "  make clean-volumes    - Also delete this project's Docker volumes (model caches)"
+	@echo "  make help             - Show this help message"

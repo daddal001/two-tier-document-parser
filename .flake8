@@ -1,0 +1,8 @@
+[flake8]
+max-line-length = 100
+# Black controls layout; long prose/string literals are not split by Black.
+extend-ignore = E203,W503,E501
+per-file-ignores =
+    src/two_tier_parser/fast/app.py: E402
+    src/two_tier_parser/accurate/app.py: E402
+    tests/*: E402

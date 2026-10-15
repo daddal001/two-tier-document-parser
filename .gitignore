@@ -49,6 +49,7 @@ Thumbs.db
 fast_result.json
 accurate_result.json
 parser_results/
+.codeql-cache/
 *.pdf
 !examples/data/sample.pdf
 MinerU/
@@ -72,3 +73,15 @@ htmlcov/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# Local execution evidence is not public documentation
+docs/VALIDATION.md
+docs/validation/
+tests/perf/results/
+
+# Personal tool settings
+.claude/settings.local.json
+
+# Downloaded Vale packages (vale sync); the project vocabulary in styles/config stays tracked
+styles/*/
+!styles/config/

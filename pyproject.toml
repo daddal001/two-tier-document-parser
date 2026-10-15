@@ -4,10 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "two_tier_document_parser"
-version = "0.1.0"
+version = "1.0.0"
 description = "A production-ready, two-tier document parsing API for RAG pipelines"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11,<3.13"
 authors = [
     { name = "Daddal" }
 ]
@@ -26,13 +26,12 @@ keywords = [
     "vlm",
 ]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
     "License :: OSI Approved :: GNU Affero General Public License v3",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
@@ -51,6 +50,7 @@ dependencies = [
     "rich>=13.0.0",
     "requests>=2.31.0",
     "minio>=7.2.0",
+    "opentelemetry-api>=1.20.0",  # imported unconditionally by the services
 ]
 
 [project.optional-dependencies]
@@ -65,13 +65,20 @@ accurate = [
 ]
 dev = [
     "pytest>=7.4.0",
+    "httpx>=0.27",  # FastAPI TestClient transport
+    "build>=1.2",
+    "pyyaml>=6.0",
     "pytest-cov>=4.1.0",
     "black>=23.0.0",
     "isort>=5.12.0",
     "flake8>=6.0.0",
     "mypy>=1.5.0",
-    "pypdf>=3.0.0",  # For creating single-page PDFs in tests
+    "bandit>=1.7.9",
+    "pre-commit>=4.0",
+    "pypdf>=6.19.0",  # For creating single-page PDFs in tests
 ]
+# Optional Redis client for task cancellation (preemption) support
+cancellation = ["redis>=5.0"]
 # Optional telemetry for distributed tracing (API-only pattern)
 # API is no-op without SDK - zero overhead for users who don't need tracing
 # See: https://opentelemetry.io/docs/concepts/instrumentation/libraries/
@@ -91,20 +98,20 @@ telemetry-sdk = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/daddal001/two_tier_document_parser"
-Documentation = "https://github.com/daddal001/two_tier_document_parser#readme"
-Repository = "https://github.com/daddal001/two_tier_document_parser"
-Issues = "https://github.com/daddal001/two_tier_document_parser/issues"
+Homepage = "https://github.com/daddal001/two-tier-document-parser"
+Documentation = "https://github.com/daddal001/two-tier-document-parser#readme"
+Repository = "https://github.com/daddal001/two-tier-document-parser"
+Issues = "https://github.com/daddal001/two-tier-document-parser/issues"
 
 [project.scripts]
-two-tier-parser-demo = "examples.demo_client:main"
+two-tier-parser-demo = "two_tier_parser.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.black]
 line-length = 100
-target-version = ['py310', 'py311', 'py312']
+target-version = ['py311', 'py312']
 include = '\.pyi?$'
 extend-exclude = '''
 /(
@@ -143,6 +150,7 @@ markers = [
     "unit: Unit tests",
     "integration: Integration tests",
     "slow: Slow tests",
+    "models: Requires the pinned MinerU, native dependencies and downloaded models",
 ]
 
 [tool.coverage.run]
@@ -165,7 +173,8 @@ exclude_lines = [
 ]
 
 [tool.mypy]
-python_version = "3.10"
+# No python_version pin: mypy targets the interpreter that runs it, so the 3.11 and 3.12 CI
+# jobs each check against their own dependency stubs.
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = false
@@ -185,3 +194,24 @@ module = [
     "transformers.*",
 ]
 ignore_missing_imports = true
+
+# Type debt that predates the mypy gate. Every other module is checked strictly.
+# Remove an entry when its module is cleaned up; do not add new entries.
+[[tool.mypy.overrides]]
+module = [
+    "two_tier_parser.common.config",
+    "two_tier_parser.fast.main",
+    "two_tier_parser.fast.service",
+    "two_tier_parser.fast.storage",
+    "two_tier_parser.fast.core.telemetry",
+    "two_tier_parser.accurate.main",
+    "two_tier_parser.accurate.service",
+    "two_tier_parser.accurate.core.telemetry",
+]
+ignore_errors = true
+
+[tool.bandit]
+# B101: asserts are used for internal invariants. B104: services bind 0.0.0.0 inside containers
+# by design; exposure is controlled by the deployment, not the process.
+skips = ["B101", "B104"]
+exclude_dirs = ["tests", "MinerU", ".venv"]

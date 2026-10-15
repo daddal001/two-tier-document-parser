@@ -1,0 +1,7 @@
+# Fail only on errors; style and info findings stay visible without blocking commits.
+failure-threshold: error
+ignored:
+  # Debian package versions are not stable across rebuilds of the slim base images.
+  - DL3008
+  # Python dependencies are resolved from the project metadata, not pinned inline.
+  - DL3013
