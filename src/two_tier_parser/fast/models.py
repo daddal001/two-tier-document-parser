@@ -49,6 +49,10 @@ class HealthResponse(BaseModel):
     minio_connected: bool = Field(
         default=False, description="S3-compatible object storage connectivity status"
     )
+    storage_configured: bool = Field(
+        default=False,
+        description="Whether an object store is configured for claim-check requests",
+    )
     layout_enabled: bool = Field(default=False, description="Whether pymupdf-layout GNN is active ")
 
 

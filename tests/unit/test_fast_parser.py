@@ -86,11 +86,11 @@ def test_admission_configuration_at_startup(override, expected):
 
 
 @pytest.mark.parametrize("route", ["/parse", "/parse-pages"])
-def test_multipart_routes_without_minio(monkeypatch, route):
+def test_multipart_routes_without_object_store(monkeypatch, route):
     """HTTP uploads reach either parser without a storage dependency."""
 
     def storage_forbidden(*_args, **_kwargs):
-        pytest.fail("A direct upload must not access MinIO")
+        pytest.fail("A direct upload must not access the object store")
 
     def parsed(pdf_bytes, filename, *_args):
         assert pdf_bytes == b"%PDF-fixture"
@@ -109,8 +109,8 @@ def test_multipart_routes_without_minio(monkeypatch, route):
             },
         }
 
-    monkeypatch.setattr(fast_main, "read_file_from_minio", storage_forbidden)
-    monkeypatch.setattr(fast_main, "check_minio_connectivity", storage_forbidden)
+    monkeypatch.setattr(fast_main, "read_object", storage_forbidden)
+    monkeypatch.setattr(fast_main, "check_connectivity", storage_forbidden)
     monkeypatch.setattr(fast_main, "parse_pdf", parsed)
     monkeypatch.setattr(fast_main, "parse_pdf_page_range", parsed)
     monkeypatch.setattr(fast_main, "_inflight_documents", 0)
@@ -178,33 +178,36 @@ def test_document_admission_releases_slot_after_request(monkeypatch):
 
 
 def test_health_reports_degraded_without_blocking_event_loop(monkeypatch):
-    """An unavailable MinIO check runs off-loop and returns degraded."""
+    """An unreachable configured store is probed off-loop and reports degraded."""
+    monkeypatch.setenv("OBJECT_STORE_ENDPOINT", "store.invalid:9000")
     caller_thread = threading.get_ident()
     check_thread = None
 
-    def unavailable_minio():
+    def unavailable_store():
         nonlocal check_thread
         check_thread = threading.get_ident()
         return False
 
-    monkeypatch.setattr(fast_main, "check_minio_connectivity", unavailable_minio)
+    monkeypatch.setattr(fast_main, "check_connectivity", unavailable_store)
 
     response = asyncio.run(fast_main.health())
 
     assert response.status == "degraded"
     assert response.minio_connected is False
+    assert response.storage_configured is True
     assert check_thread is not None
     assert check_thread != caller_thread
 
 
-def test_health_bounds_slow_minio_check(monkeypatch):
+def test_health_bounds_slow_storage_check(monkeypatch):
     """A stalled dependency check returns before the probe budget expires."""
+    monkeypatch.setenv("OBJECT_STORE_ENDPOINT", "store.invalid:9000")
 
     async def stalled_to_thread(_function):
         await asyncio.sleep(60)
 
     monkeypatch.setattr(asyncio, "to_thread", stalled_to_thread)
-    monkeypatch.setattr(fast_main, "MINIO_HEALTH_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(fast_main, "STORAGE_HEALTH_TIMEOUT_SECONDS", 0.01)
 
     response = asyncio.run(fast_main.health())
 

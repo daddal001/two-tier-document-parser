@@ -87,7 +87,7 @@ from .. import API_VERSION
 from ..common.json_logging import configure_json_logging, safe_log_value
 from .models import HealthResponse, PageRangeParseResponse, ParseResponse
 from .service import parse_pdf, parse_pdf_page_range
-from .storage import check_minio_connectivity, read_file_from_minio
+from .storage import StorageNotConfigured, check_connectivity, read_object, storage_configured
 
 configure_json_logging(service_name="fast-parser")
 
@@ -201,7 +201,10 @@ PARSE_BACKPRESSURE_FACTOR = int(os.getenv("PARSE_BACKPRESSURE_FACTOR", "2"))
 # Default to the configured process slots for standalone deployments. Callers
 # can set a different positive bound for their memory and latency requirements.
 MAX_INFLIGHT_DOCUMENTS = int(os.getenv("MAX_INFLIGHT_DOCUMENTS", str(WORKERS + PAGES_WORKERS)))
-MINIO_HEALTH_TIMEOUT_SECONDS = float(os.getenv("MINIO_HEALTH_TIMEOUT_SECONDS", "1.5"))
+STORAGE_HEALTH_TIMEOUT_SECONDS = float(
+    os.getenv("OBJECT_STORE_HEALTH_TIMEOUT_SECONDS")
+    or os.getenv("MINIO_HEALTH_TIMEOUT_SECONDS", "1.5")
+)
 if WORKERS < 1 or PAGES_WORKERS < 1 or MAX_TASKS < 1 or MAX_INFLIGHT_DOCUMENTS < 1:
     raise ValueError(
         "WORKERS, PAGES_WORKERS, WORKER_MAX_TASKS, and MAX_INFLIGHT_DOCUMENTS must be positive"
@@ -355,28 +358,35 @@ async def metrics() -> Response:
 
 @app.get("/health", response_model=HealthResponse)
 async def health() -> HealthResponse:
-    """Health check endpoint with worker and S3-compatible object storage status."""
+    """Report worker and layout state plus the configured object store, if any.
+
+    The service is ``healthy`` when no object store is configured (direct uploads
+    need none) and ``degraded`` only when a configured store is unreachable.
+    """
     with tracer.start_as_current_span("health", attributes={"service_name": "fast-parser"}):
-        try:
-            minio_ok = await asyncio.wait_for(
-                asyncio.to_thread(check_minio_connectivity),
-                timeout=MINIO_HEALTH_TIMEOUT_SECONDS,
-            )
-        except TimeoutError:
-            logger.warning(
-                "S3-compatible object storage health check exceeded probe budget",
-                extra={
-                    "service_name": "fast-parser",
-                    "timeout_seconds": MINIO_HEALTH_TIMEOUT_SECONDS,
-                },
-            )
-            minio_ok = False
+        configured = storage_configured()
+        storage_ok = False
+        if configured:
+            try:
+                storage_ok = await asyncio.wait_for(
+                    asyncio.to_thread(check_connectivity),
+                    timeout=STORAGE_HEALTH_TIMEOUT_SECONDS,
+                )
+            except TimeoutError:
+                logger.warning(
+                    "S3-compatible object storage health check exceeded probe budget",
+                    extra={
+                        "service_name": "fast-parser",
+                        "timeout_seconds": STORAGE_HEALTH_TIMEOUT_SECONDS,
+                    },
+                )
         return HealthResponse(
-            status="degraded" if not minio_ok else "healthy",
+            status="degraded" if configured and not storage_ok else "healthy",
             workers=WORKERS,
             no_gil=NO_GIL,
             layout_enabled="pymupdf.layout" in sys.modules,
-            minio_connected=minio_ok,
+            minio_connected=storage_ok,
+            storage_configured=configured,
         )
 
 
@@ -495,7 +505,12 @@ async def _read_pdf_from_request(
         )
 
         try:
-            pdf_bytes = await asyncio.to_thread(read_file_from_minio, bucket, key)
+            pdf_bytes = await asyncio.to_thread(read_object, bucket, key)
+        except StorageNotConfigured:
+            raise HTTPException(
+                status_code=501,
+                detail="No object store is configured; upload the PDF as multipart/form-data",
+            )
         except Exception as e:
             logger.error(
                 "Failed to read file from S3-compatible object storage",
