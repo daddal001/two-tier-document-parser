@@ -89,7 +89,7 @@ from .models import HealthResponse, PageRangeParseResponse, ParseResponse
 from .service import parse_pdf, parse_pdf_page_range
 from .storage import check_minio_connectivity, read_file_from_minio
 
-configure_json_logging(os.getenv("LOG_LEVEL", "INFO"))
+configure_json_logging(service_name="fast-parser")
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer("parser.fast")
