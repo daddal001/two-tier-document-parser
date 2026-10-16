@@ -34,7 +34,7 @@ class ParseResponse(BaseModel):
     metadata: dict = Field(..., description="Parsing metadata")
     images: List[ImageData] = Field(
         default_factory=list,
-        description="Extracted images (empty when extract_images=false). OWASP ASVS V12 caps apply.",
+        description="Extracted images (empty when extract_images=false). Application image-extraction caps apply.",
     )
 
 

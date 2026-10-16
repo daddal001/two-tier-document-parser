@@ -1,10 +1,2 @@
-fastapi==0.121.2
-uvicorn[standard]==0.24.0
-python-multipart==0.0.31
-pymupdf4llm>=0.0.17
-pymupdf>=1.26.0  # Explicit version pin for stability
-pymupdf-layout
-pydantic==2.5.0
-# pages_executor queue-depth + parse-pages latency metrics.
-# Defensive import in main.py — service still boots if the wheel is absent.
-prometheus_client>=0.20.0
+# Install from the repository root; pyproject.toml owns dependency declarations.
+.[fast,telemetry]

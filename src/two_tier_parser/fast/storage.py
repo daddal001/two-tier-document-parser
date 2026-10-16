@@ -1,6 +1,8 @@
-"""S3-compatible object storage storage client for Fast Parser (Claim-Check Pattern).
+"""Optional S3-compatible object storage reads for fast-parser claim-check requests.
 
-Reads PDF files directly from S3-compatible object storage instead of receiving bytes via HTTP.
+Multipart uploads bypass this adapter. JSON requests provide a bucket and key;
+the async HTTP handler schedules these synchronous SDK reads in a thread.
+The parser reads caller-owned objects without storing extraction results.
 """
 
 import logging
@@ -16,7 +18,13 @@ _minio_client = None
 
 
 def get_minio_client():
-    """Lazy-initialized S3-compatible object storage client."""
+    """Return the shared client, initializing it from MINIO_* variables on demand.
+
+    MINIO_ENDPOINT defaults to minio:9000. Access and secret keys use
+    MINIO_ACCESS_KEY/MINIO_SECRET_KEY, with MINIO_ROOT_USER and
+    MINIO_ROOT_PASSWORD as compatibility fallbacks. MINIO_SECURE=true selects TLS.
+    Creating the client does not establish connectivity or bucket access.
+    """
     global _minio_client
     if _minio_client is None:
         from minio import Minio
@@ -34,7 +42,19 @@ def get_minio_client():
 
 
 def read_file_from_minio(bucket: str, key: str) -> bytes:
-    """Read file bytes from S3-compatible object storage with OTel span."""
+    """Read object bytes synchronously and release the response connection.
+
+    Args:
+        bucket: Caller-owned S3-compatible bucket name.
+        key: Object key validated by the HTTP request handler.
+
+    Returns:
+        Complete object contents as bytes.
+
+    Raises:
+        Exception: SDK configuration, retrieval, or response reading failed.
+            The HTTP handler translates storage failures to HTTP 502.
+    """
     with tracer.start_as_current_span(
         "minio.get_object",
         attributes={
@@ -58,9 +78,15 @@ def check_minio_connectivity(timeout_seconds: float = 1.0) -> bool:
     """Verify S3-compatible object storage with a bounded, non-retrying health-check client.
 
     Parser reads keep the shared SDK client's normal retry behavior. Health
-    probes need a tighter contract: an unavailable S3-compatible object storage endpoint must return
-    ``False`` before Kubernetes' three-second readiness timeout instead of
-    blocking the server's event loop through the SDK retry sequence.
+    probes use separate connection/read timeouts instead of the normal SDK retry
+    sequence. The async health route also imposes its own budget around this call.
+
+    Args:
+        timeout_seconds: Per-connection and per-read socket timeout, not a strict
+            total deadline for DNS, connection setup, and response handling.
+
+    Returns:
+        True if listing buckets succeeds; False if the probe raises an exception.
     """
     from minio import Minio
 
