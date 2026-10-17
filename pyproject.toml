@@ -50,6 +50,7 @@ dependencies = [
     "rich>=13.0.0",
     "requests>=2.31.0",
     "minio>=7.2.0",
+    "urllib3>=2.8.0",  # imported directly by fast.storage; security floor for streaming and proxy fixes
     "opentelemetry-api>=1.20.0",  # imported unconditionally by the services
 ]
 
@@ -58,6 +59,7 @@ dependencies = [
 fast = [
     "pymupdf4llm>=0.3.0",
     "pymupdf>=1.26",
+    "prometheus-client>=0.19",  # /metrics body; the service starts without it but exports nothing
 ]
 accurate = [
     "torch>=2.0.0",

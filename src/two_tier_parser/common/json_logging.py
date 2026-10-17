@@ -91,14 +91,18 @@ class JsonFormatter(logging.Formatter):
         """Return the record as JSON; a value that cannot be encoded never drops the line."""
         extras = {k: v for k, v in record.__dict__.items() if k not in _STANDARD}
         payload: Dict[str, Any] = {
-            "service_name": _service_name(self._default_service),
-            **_trace_fields(),
-            **{k: v for k, v in extras.items() if k not in _RESERVED},
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(record.created)),
             "level": record.levelname,
             "logger": record.name,
             "message": record.getMessage(),
+            "service_name": _service_name(self._default_service),
+            **_trace_fields(),
         }
+        # Extras are added last and skipped when they would replace a canonical field;
+        # a record-supplied service_name is the one deliberate override.
+        for key, value in extras.items():
+            if key not in _RESERVED:
+                payload[key] = value
         if record.exc_info:
             payload["exception"] = self.formatException(record.exc_info)
         try:
