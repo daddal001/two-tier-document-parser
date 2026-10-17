@@ -11,9 +11,8 @@ services:
     ports:
       - "8004:8004"
     environment:
-      - PYTHON_GIL=0          # Enable no-GIL mode for true parallelism
-      - WORKERS=4             # Number of thread pool workers
-      - LOG_LEVEL=INFO        # Logging level (DEBUG, INFO, WARNING, ERROR)
+      - WORKERS=4             # Number of parser worker processes
+      - LOG_LEVEL=INFO        # Logging level, any case (DEBUG, INFO, WARNING, ERROR)
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8004/health')"]
       interval: 30s
