@@ -317,7 +317,9 @@ def parse_pdf(
     Returns:
         Dictionary with markdown content and metadata.
         Metadata includes ``skipped_pages`` list if any pages failed to parse,
-        plus ``preempted`` and ``last_page_parsed`` when preempted.
+        plus ``preempted`` and ``last_page_parsed`` when preempted. When the
+        wall-clock deadline stops a task-aware parse, ``truncated`` is
+        ``"deadline"`` and ``last_page_parsed`` is the last page included.
 
     Raises:
         Exception: PDF loading or an unrecognized conversion error failed.
@@ -383,6 +385,7 @@ def _parse_pdf(
         # between pages so long parses can be preempted by Stage 1 partial parses.
         skipped_pages = []
         preempted = False
+        deadline_truncated = False
         last_page_parsed = -1
 
         if task_id is not None:
@@ -397,7 +400,6 @@ def _parse_pdf(
                 },
             ) as preempt_span:
                 markdown_parts = []
-                deadline_truncated = False
                 effective_start = max(0, min(start_page, total_pages))
                 for page_num in range(effective_start, total_pages):
                     # Wall-clock deadline (between-pages): bound a runaway many-page
@@ -593,6 +595,11 @@ def _parse_pdf(
             result["metadata"]["preempted"] = preempted
             result["metadata"]["last_page_parsed"] = last_page_parsed
             result["metadata"]["start_page"] = start_page
+
+        # A deadline stop returns HTTP 200 with partial Markdown; the marker keeps a caller
+        # from mistaking it for a complete parse.
+        if deadline_truncated:
+            result["metadata"]["truncated"] = "deadline"
 
         # Add skipped pages info if any
         if skipped_pages:
