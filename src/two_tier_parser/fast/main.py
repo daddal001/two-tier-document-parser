@@ -75,10 +75,10 @@ except ImportError:  # pragma: no cover - exercised only on stripped builds
             """Accept a histogram observation without collecting it."""
             return None
 
-    Gauge = Histogram = lambda *a, **kw: _NoopMetric()  # type: ignore[assignment]
+    Gauge = Histogram = lambda *a, **kw: _NoopMetric()  # type: ignore[assignment,unused-ignore]
     CONTENT_TYPE_LATEST = "text/plain; version=0.0.4"
 
-    def generate_latest(_registry=None):  # type: ignore[no-redef]
+    def generate_latest(_registry=None):  # type: ignore[no-redef,unused-ignore]
         """Return an empty metrics body when Prometheus is unavailable."""
         return b""
 
@@ -134,10 +134,10 @@ except ImportError:
 # Default worker count follows CPU affinity on Linux and os.cpu_count elsewhere.
 # CPU quotas may differ from affinity; deployments can set WORKERS explicitly.
 def _default_workers() -> int:
-    try:
-        return max(1, len(os.sched_getaffinity(0)))
-    except AttributeError:  # macOS / Windows
-        return max(1, os.cpu_count() or 2)
+    affinity = getattr(os, "sched_getaffinity", None)  # absent on macOS and Windows
+    if affinity is not None:
+        return max(1, len(affinity(0)))
+    return max(1, os.cpu_count() or 2)
 
 
 WORKERS = int(os.getenv("WORKERS", str(_default_workers())))
@@ -210,7 +210,8 @@ PARSE_BACKPRESSURE_FACTOR = int(os.getenv("PARSE_BACKPRESSURE_FACTOR", "2"))
 MAX_INFLIGHT_DOCUMENTS = int(os.getenv("MAX_INFLIGHT_DOCUMENTS", str(WORKERS + PAGES_WORKERS)))
 STORAGE_HEALTH_TIMEOUT_SECONDS = float(
     os.getenv("OBJECT_STORE_HEALTH_TIMEOUT_SECONDS")
-    or os.getenv("MINIO_HEALTH_TIMEOUT_SECONDS", "1.5")
+    or os.getenv("MINIO_HEALTH_TIMEOUT_SECONDS")
+    or "1.5"
 )
 if WORKERS < 1 or PAGES_WORKERS < 1 or MAX_TASKS < 1 or MAX_INFLIGHT_DOCUMENTS < 1:
     raise ValueError(
@@ -348,7 +349,7 @@ def _pages_executor_queue_depth() -> int:
     removes it. In that case, the shared request admission cap still applies.
     """
     try:
-        return len(pages_executor._pending_work_items)  # type: ignore[attr-defined]
+        return len(pages_executor._pending_work_items)
     except AttributeError:
         return 0
 
@@ -362,7 +363,7 @@ def _executor_queue_depth() -> int:
     disengages rather than rejecting all traffic.
     """
     try:
-        return len(executor._pending_work_items)  # type: ignore[attr-defined]
+        return len(executor._pending_work_items)
     except AttributeError:
         return 0
 

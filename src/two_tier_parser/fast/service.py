@@ -578,7 +578,7 @@ def _parse_pdf(
 
         processing_time_ms = int((time.time() - start_time) * 1000)
 
-        result = {
+        result: Dict[str, Any] = {
             "markdown": markdown_text,
             "metadata": {
                 "pages": total_pages,

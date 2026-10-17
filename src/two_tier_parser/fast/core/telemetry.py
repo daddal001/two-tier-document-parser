@@ -18,6 +18,7 @@ from typing import Any, Dict, Generator, Optional
 logger = logging.getLogger(__name__)
 
 # Optional OpenTelemetry (graceful fallback)
+tracer: Any
 try:
     from opentelemetry import trace
     from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor

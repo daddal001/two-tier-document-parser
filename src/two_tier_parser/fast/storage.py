@@ -159,6 +159,7 @@ def read_object(bucket: str, key: str, max_bytes: Optional[int] = None) -> bytes
         client = get_client()
         response = client.get_object(bucket, key)
         try:
+            data: bytes
             if max_bytes is not None:
                 declared = response.headers.get("Content-Length", "")
                 if declared.isdigit() and int(declared) > max_bytes:

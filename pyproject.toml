@@ -199,11 +199,6 @@ ignore_missing_imports = true
 # Remove an entry when its module is cleaned up; do not add new entries.
 [[tool.mypy.overrides]]
 module = [
-    "two_tier_parser.common.config",
-    "two_tier_parser.fast.main",
-    "two_tier_parser.fast.service",
-    "two_tier_parser.fast.storage",
-    "two_tier_parser.fast.core.telemetry",
     "two_tier_parser.accurate.main",
     "two_tier_parser.accurate.service",
     "two_tier_parser.accurate.core.telemetry",
