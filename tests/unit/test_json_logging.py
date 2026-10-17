@@ -62,7 +62,16 @@ def test_service_name_from_environment_and_record(monkeypatch):
     assert _format(_record())["service_name"] == "from-otel"
     monkeypatch.setenv("SERVICE_NAME", "explicit")
     assert _format(_record())["service_name"] == "explicit"
+    assert _format(_record(service_name="fast-parser"))["service_name"] == "explicit"
+
+
+def test_record_service_name_is_used_when_no_environment_override():
     assert _format(_record(service_name="fast-parser"))["service_name"] == "fast-parser"
+
+
+def test_extras_cannot_forge_trace_ids():
+    payload = _format(_record(trace_id="forged", span_id="forged"))
+    assert "trace_id" not in payload and "span_id" not in payload
 
 
 def test_exception_is_one_escaped_field():

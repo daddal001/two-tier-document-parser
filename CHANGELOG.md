@@ -52,8 +52,16 @@ Before deploying, check that:
 4. Callers send a non-empty string `filename` and a string `task_id` (or omit them).
 5. Callers do not retry a 413.
 6. Health checks keep working: `/health` still answers 200 in every state.
-7. The running image matches the commit you believe it is; `pip freeze` in the image
+7. Nothing reads the text of a 500 response: the detail was `Parsing failed: <error>` and is
+   now `Parsing failed (correlation_id=<id>)`.
+8. Deployments that relied on the implicit `minio:9000` default with no `MINIO_*` or
+   `OBJECT_STORE_*` variable set must now set `OBJECT_STORE_ENDPOINT`; with nothing set,
+   claim-check requests return 501 and `/health` stays `healthy`.
+9. A read-only root filesystem needs a writable `/tmp` (for example `--tmpfs /tmp`) and the
+   default `/dev/shm`.
+10. The running image matches the commit you believe it is; `pip freeze` in the image
    should be compared with the `uv.lock` of the release before switching.
+   `SERVICE_NAME`, when set, overrides the `service_name` field on every log line.
 
 ### Added
 - OpenTelemetry API-only instrumentation for distributed tracing (74+ span points)

@@ -8,14 +8,15 @@ Environment variables:
     LOG_LEVEL: Level name in any case (``info``, ``INFO``) or a number. Emitted
         ``level`` values are always upper case. Unknown values fall back to INFO.
     LOG_FORMAT: ``json`` (default) or ``text`` for a human-readable local format.
-    SERVICE_NAME: Value of the ``service_name`` field when a record does not
-        carry its own. ``OTEL_SERVICE_NAME`` is the fallback.
+    SERVICE_NAME: Value of the ``service_name`` field on every record, taking
+        precedence over the name a call site supplies. ``OTEL_SERVICE_NAME`` is the
+        fallback.
 
 Fields written on every record: ``timestamp`` (UTC, ``YYYY-MM-DDTHH:MM:SSZ``),
 ``level``, ``logger``, ``message`` and ``service_name``. ``trace_id`` and
 ``span_id`` are added while an OpenTelemetry span is active. Fields passed with
 ``extra=`` (``task_id``, ``duration_ms``, ``error_type`` and so on) are added
-beside them, but can never replace the five canonical fields. ``exception``
+beside them, but can never replace the canonical or trace fields. ``exception``
 holds the formatted traceback when ``exc_info`` is set.
 """
 
@@ -25,7 +26,7 @@ import os
 import time
 from typing import Any, Dict, Optional, Union
 
-_RESERVED = {"timestamp", "level", "logger", "message", "exception"}
+_RESERVED = {"timestamp", "level", "logger", "message", "exception", "trace_id", "span_id"}
 _STANDARD = set(logging.makeLogRecord({}).__dict__) | {"message", "asctime"}
 _DEFAULT_SERVICE = "two-tier-parser"
 
@@ -59,8 +60,9 @@ def resolve_level(value: Union[str, int, None], default: int = logging.INFO) -> 
     return logging.getLevelNamesMapping().get(text.upper(), default)
 
 
-def _service_name(default: str = _DEFAULT_SERVICE) -> str:
-    return os.getenv("SERVICE_NAME") or os.getenv("OTEL_SERVICE_NAME") or default
+def _service_name(record_value: Any, default: str) -> str:
+    """Environment wins, then the name a record supplies, then the configured default."""
+    return os.getenv("SERVICE_NAME") or os.getenv("OTEL_SERVICE_NAME") or record_value or default
 
 
 def _trace_fields() -> Dict[str, str]:
@@ -95,13 +97,12 @@ class JsonFormatter(logging.Formatter):
             "level": record.levelname,
             "logger": record.name,
             "message": record.getMessage(),
-            "service_name": _service_name(self._default_service),
+            "service_name": _service_name(extras.get("service_name"), self._default_service),
             **_trace_fields(),
         }
-        # Extras are added last and skipped when they would replace a canonical field;
-        # a record-supplied service_name is the one deliberate override.
+        # Extras are added last and never replace a canonical or trace field.
         for key, value in extras.items():
-            if key not in _RESERVED:
+            if key not in _RESERVED and key != "service_name":
                 payload[key] = value
         if record.exc_info:
             payload["exception"] = self.formatException(record.exc_info)
