@@ -17,6 +17,7 @@ explicit OTLP configuration. The app.py module remains a compatibility wrapper.
 """
 
 import asyncio
+import importlib
 import json
 import logging
 import os
@@ -26,64 +27,13 @@ import time
 import uuid
 from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, Response
 from opentelemetry import trace
 from starlette.datastructures import UploadFile
 
-# Prometheus client is optional (defence-in-depth: never crash startup if the
-# package is missing in a particular build). We publish two
-# metrics: `pages_executor_queue_depth` (Gauge) and `parse_pages_total_ms_seconds`
-# (Histogram). Falls back to no-op stand-ins so the route logic stays clean.
-try:
-    from prometheus_client import (
-        CONTENT_TYPE_LATEST,
-        CollectorRegistry,
-        Gauge,
-        Histogram,
-        generate_latest,
-    )
-
-    _PROMETHEUS_REGISTRY = CollectorRegistry()
-    _PROM_OK = True
-except ImportError:  # pragma: no cover - exercised only on stripped builds
-    _PROMETHEUS_REGISTRY = None
-    _PROM_OK = False
-
-    class _NoopMetric:  # noqa: D401 - shim
-        """Preserve the metric call interface when Prometheus is unavailable."""
-
-        def labels(self, *a, **kw):
-            """Return this inert metric for chained label calls."""
-            return self
-
-        def inc(self, *a, **kw):
-            """Accept a counter increment without collecting it."""
-            return None
-
-        def dec(self, *a, **kw):
-            """Accept a gauge decrement without collecting it."""
-            return None
-
-        def set(self, *a, **kw):
-            """Accept a gauge value without collecting it."""
-            return None
-
-        def observe(self, *a, **kw):
-            """Accept a histogram observation without collecting it."""
-            return None
-
-    Gauge = Histogram = lambda *a, **kw: _NoopMetric()  # type: ignore[assignment,unused-ignore]
-    CONTENT_TYPE_LATEST = "text/plain; version=0.0.4"
-
-    def generate_latest(_registry=None):  # type: ignore[no-redef,unused-ignore]
-        """Return an empty metrics body when Prometheus is unavailable."""
-        return b""
-
-
-# Configure structured logging (applications can override)
 from .. import API_VERSION
 from ..common.json_logging import configure_json_logging, safe_log_value
 from .models import HealthResponse, PageRangeParseResponse, ParseResponse
@@ -96,6 +46,61 @@ from .storage import (
     storage_configured,
 )
 
+
+# The Prometheus client is optional so a stripped build never fails at startup; it is part of
+# the `fast` extra, so the documented series are exported by default. Without it the metric
+# calls below are no-ops and /metrics answers 200 with an empty body.
+def _load_prometheus() -> Any:
+    try:
+        return importlib.import_module("prometheus_client")
+    except ImportError:  # pragma: no cover - exercised only on stripped builds
+        return None
+
+
+_prom = _load_prometheus()
+_PROM_OK = _prom is not None
+_PROMETHEUS_REGISTRY: Any = _prom.CollectorRegistry() if _PROM_OK else None
+CONTENT_TYPE_LATEST: str = _prom.CONTENT_TYPE_LATEST if _PROM_OK else "text/plain; version=0.0.4"
+
+
+class _NoopMetric:
+    """Preserve the metric call interface when Prometheus is unavailable."""
+
+    def labels(self, *a: Any, **kw: Any) -> "_NoopMetric":
+        """Return this inert metric for chained label calls."""
+        return self
+
+    def inc(self, *a: Any, **kw: Any) -> None:
+        """Accept a counter increment without collecting it."""
+
+    def dec(self, *a: Any, **kw: Any) -> None:
+        """Accept a gauge decrement without collecting it."""
+
+    def set(self, *a: Any, **kw: Any) -> None:
+        """Accept a gauge value without collecting it."""
+
+    def observe(self, *a: Any, **kw: Any) -> None:
+        """Accept a histogram observation without collecting it."""
+
+
+def _gauge(name: str, documentation: str) -> Any:
+    if not _PROM_OK:
+        return _NoopMetric()
+    return _prom.Gauge(name, documentation, registry=_PROMETHEUS_REGISTRY)
+
+
+def _histogram(name: str, documentation: str, buckets: tuple) -> Any:
+    if not _PROM_OK:
+        return _NoopMetric()
+    return _prom.Histogram(name, documentation, registry=_PROMETHEUS_REGISTRY, buckets=buckets)
+
+
+def generate_latest(registry: Any) -> bytes:
+    """Render the registry in Prometheus text format, or nothing without the client."""
+    return _prom.generate_latest(registry) if _PROM_OK else b""
+
+
+# Configure structured logging (applications can override)
 configure_json_logging(service_name="fast-parser")
 
 logger = logging.getLogger(__name__)
@@ -304,40 +309,28 @@ async def bound_parser_inflight_documents(request: Request, call_next):
             )
 
 
-# Prometheus metrics for . Available to any Prometheus-compatible monitoring system.
-if _PROM_OK:
-    PAGES_EXECUTOR_QUEUE_DEPTH = Gauge(
-        "pages_executor_queue_depth",
-        "Current pending-work-item count for the /parse-pages dedicated ProcessPoolExecutor .",
-        registry=_PROMETHEUS_REGISTRY,
-    )
-    PARSE_PAGES_TOTAL_MS = Histogram(
-        "parse_pages_total_ms_seconds",
-        "End-to-end wall-clock latency of /parse-pages, route-handler entry → return.",
-        registry=_PROMETHEUS_REGISTRY,
-        buckets=(0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0),
-    )
-    PARSE_PAGES_BACKPRESSURE_503 = Gauge(
-        "parse_pages_backpressure_503_total",
-        "Cumulative count of /parse-pages requests rejected with HTTP 503 due to pool saturation.",
-        registry=_PROMETHEUS_REGISTRY,
-    )
-    EXECUTOR_QUEUE_DEPTH = Gauge(
-        "executor_queue_depth",
-        "Current pending-work-item count for the shared /parse (Stage 2) ProcessPoolExecutor.",
-        registry=_PROMETHEUS_REGISTRY,
-    )
-    PARSE_BACKPRESSURE_503 = Gauge(
-        "parse_backpressure_503_total",
-        "Cumulative count of /parse requests rejected with HTTP 503 due to shared-pool saturation.",
-        registry=_PROMETHEUS_REGISTRY,
-    )
-else:  # pragma: no cover
-    PAGES_EXECUTOR_QUEUE_DEPTH = Gauge()
-    PARSE_PAGES_TOTAL_MS = Histogram()
-    PARSE_PAGES_BACKPRESSURE_503 = Gauge()
-    EXECUTOR_QUEUE_DEPTH = Gauge()
-    PARSE_BACKPRESSURE_503 = Gauge()
+# Prometheus metrics, available to any Prometheus-compatible monitoring system.
+PAGES_EXECUTOR_QUEUE_DEPTH = _gauge(
+    "pages_executor_queue_depth",
+    "Current pending-work-item count for the /parse-pages dedicated ProcessPoolExecutor .",
+)
+PARSE_PAGES_TOTAL_MS = _histogram(
+    "parse_pages_total_ms_seconds",
+    "End-to-end wall-clock latency of /parse-pages, route-handler entry → return.",
+    (0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0),
+)
+PARSE_PAGES_BACKPRESSURE_503 = _gauge(
+    "parse_pages_backpressure_503_total",
+    "Cumulative count of /parse-pages requests rejected with HTTP 503 due to pool saturation.",
+)
+EXECUTOR_QUEUE_DEPTH = _gauge(
+    "executor_queue_depth",
+    "Current pending-work-item count for the shared /parse (Stage 2) ProcessPoolExecutor.",
+)
+PARSE_BACKPRESSURE_503 = _gauge(
+    "parse_backpressure_503_total",
+    "Cumulative count of /parse requests rejected with HTTP 503 due to shared-pool saturation.",
+)
 
 
 def _pages_executor_queue_depth() -> int:
@@ -401,7 +394,7 @@ async def metrics() -> Response:
     PAGES_EXECUTOR_QUEUE_DEPTH.set(_pages_executor_queue_depth())
     EXECUTOR_QUEUE_DEPTH.set(_executor_queue_depth())
     return Response(
-        content=generate_latest(_PROMETHEUS_REGISTRY) if _PROM_OK else b"",
+        content=generate_latest(_PROMETHEUS_REGISTRY),
         media_type=CONTENT_TYPE_LATEST,
     )
 
