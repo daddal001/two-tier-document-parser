@@ -5,6 +5,7 @@ import logging
 import sys
 from pathlib import Path
 
+import pymupdf
 import pytest
 from fastapi import HTTPException
 from starlette.requests import Request
@@ -243,7 +244,22 @@ class _RecordingTracer:
 def test_corrupt_pdf_raises_and_closes_its_span(monkeypatch, call):
     recorder = _RecordingTracer()
     monkeypatch.setattr(service, "tracer", recorder)
-    with pytest.raises(Exception):
+    with pytest.raises(pymupdf.FileDataError):
         call()
     assert recorder.entered == 1
     assert recorder.exited == 1
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"), [('"abc"', 0), ("-5", 0), ("null", 0), ("7", 7), ('"3"', 3)]
+)
+def test_claim_check_start_page_is_clamped_to_a_valid_cursor(monkeypatch, raw, expected):
+    monkeypatch.setenv("OBJECT_STORE_ENDPOINT", "store.invalid")
+    monkeypatch.setattr(fast_main, "read_object", lambda *a: b"%PDF-")
+    request = _request(
+        ('{"bucket": "b", "key": "k.pdf", "start_page": %s}' % raw).encode(), "application/json"
+    )
+    _bytes, _name, _source, _task, start_page, _opts = asyncio.run(
+        fast_main._read_pdf_from_request(request)
+    )
+    assert start_page == expected
