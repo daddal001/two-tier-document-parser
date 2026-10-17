@@ -323,11 +323,36 @@ def parse_pdf(
         Exception: PDF loading or an unrecognized conversion error failed.
             Recognized page errors follow the recovery path described above.
     """
-    start_time = time.time()
-    parse_span_ctx = tracer.start_as_current_span(
+    with tracer.start_as_current_span(
         "parse_pdf", attributes={"service_name": "fast-parser", "document_name": filename}
-    )
-    parse_span_ctx.__enter__()
+    ):
+        return _parse_pdf(
+            pdf_bytes,
+            filename,
+            task_id,
+            start_page,
+            progress_ceiling,
+            extract_images_flag,
+            image_max_count,
+            image_max_bytes,
+            image_max_pixels,
+        )
+
+
+def _parse_pdf(
+    pdf_bytes: bytes,
+    filename: str,
+    task_id: Optional[str],
+    start_page: int,
+    progress_ceiling: float,
+    extract_images_flag: bool,
+    image_max_count: int,
+    image_max_bytes: int,
+    image_max_pixels: int,
+) -> Dict[str, Any]:
+    """Parse inside the ``parse_pdf`` span; see ``parse_pdf`` for the contract."""
+    start_time = time.time()
+    doc = None
 
     import pymupdf
 
@@ -335,24 +360,24 @@ def parse_pdf(
     # stream=bytes since 1.14.13. Single open (previously this function opened
     # the file 3 times: page count, full parse, fallback). Reuse one handle
     # for the entire request to save ~2× open overhead on small docs.
-    with traced_operation(
-        "pdf.load", {"file_name": filename, "pdf_size_bytes": len(pdf_bytes)}
-    ) as span:
-        doc = pymupdf.open(stream=pdf_bytes, filetype="pdf")
-        total_pages = len(doc)
-        if span:
-            span.set_attribute("total_pages", total_pages)
-            span.set_attribute("pdf_size_bytes", len(pdf_bytes))
-        logger.debug(
-            "PDF loaded",
-            extra={
-                "service_name": "fast-parser",
-                "page_count": total_pages,
-                "document_name": filename,
-            },
-        )
-
     try:
+        with traced_operation(
+            "pdf.load", {"file_name": filename, "pdf_size_bytes": len(pdf_bytes)}
+        ) as span:
+            doc = pymupdf.open(stream=pdf_bytes, filetype="pdf")
+            total_pages = len(doc)
+            if span:
+                span.set_attribute("total_pages", total_pages)
+                span.set_attribute("pdf_size_bytes", len(pdf_bytes))
+            logger.debug(
+                "PDF loaded",
+                extra={
+                    "service_name": "fast-parser",
+                    "page_count": total_pages,
+                    "document_name": filename,
+                },
+            )
+
         # Preemptable path : task_id present means Stage 2 resume/cancel
         # semantics. We iterate page-by-page and check parse_cancel:{task_id}
         # between pages so long parses can be preempted by Stage 1 partial parses.
@@ -646,13 +671,13 @@ def parse_pdf(
         # no tempfile; single doc handle closes here. gc.collect()
         # still useful in long-lived ProcessPool worker to release pymupdf
         # internal caches — kept for parity with max_tasks_per_child pattern.
-        try:
-            doc.close()
-        except Exception:
-            # The document may already be closed; cleanup must not mask a parse failure.
-            pass
+        if doc is not None:
+            try:
+                doc.close()
+            except Exception:
+                # The document may already be closed; cleanup must not mask a parse failure.
+                pass
         gc.collect()
-        parse_span_ctx.__exit__(None, None, None)
 
 
 def parse_pdf_page_range(
@@ -693,26 +718,50 @@ def parse_pdf_page_range(
         Exception: Loading or selected-range conversion failed. This function
             does not use the full-document page-by-page retry loop.
     """
-    start_time = time.time()
-    range_span_ctx = tracer.start_as_current_span(
+    with tracer.start_as_current_span(
         "parse_pdf_page_range",
         attributes={"service_name": "fast-parser", "document_name": filename},
-    )
-    range_span_ctx.__enter__()
+    ):
+        return _parse_pdf_page_range(
+            pdf_bytes,
+            filename,
+            start_page,
+            end_page,
+            extract_images_flag,
+            image_max_count,
+            image_max_bytes,
+            image_max_pixels,
+        )
+
+
+def _parse_pdf_page_range(
+    pdf_bytes: bytes,
+    filename: str,
+    start_page: int,
+    end_page: Optional[int],
+    extract_images_flag: bool,
+    image_max_count: int,
+    image_max_bytes: int,
+    image_max_pixels: int,
+) -> Dict[str, Any]:
+    """Parse inside the ``parse_pdf_page_range`` span; see that function for the contract."""
+    start_time = time.time()
+    doc = None
 
     import pymupdf
 
     # BytesIO input, single doc handle (was: tempfile + 2 opens).
-    with traced_operation(
-        "pdf.load", {"file_name": filename, "mode": "page_range", "pdf_size_bytes": len(pdf_bytes)}
-    ) as span:
-        doc = pymupdf.open(stream=pdf_bytes, filetype="pdf")
-        total_pages = len(doc)
-        if span:
-            span.set_attribute("total_pages", total_pages)
-            span.set_attribute("pdf_size_bytes", len(pdf_bytes))
-
     try:
+        with traced_operation(
+            "pdf.load",
+            {"file_name": filename, "mode": "page_range", "pdf_size_bytes": len(pdf_bytes)},
+        ) as span:
+            doc = pymupdf.open(stream=pdf_bytes, filetype="pdf")
+            total_pages = len(doc)
+            if span:
+                span.set_attribute("total_pages", total_pages)
+                span.set_attribute("pdf_size_bytes", len(pdf_bytes))
+
         # Clamp start_page to valid range [0, total_pages]
         start_page = max(0, min(start_page, total_pages))
 
@@ -834,10 +883,10 @@ def parse_pdf_page_range(
         }
 
     finally:
-        try:
-            doc.close()
-        except Exception:
-            # The document may already be closed; cleanup must not mask a parse failure.
-            pass
+        if doc is not None:
+            try:
+                doc.close()
+            except Exception:
+                # The document may already be closed; cleanup must not mask a parse failure.
+                pass
         gc.collect()
-        range_span_ctx.__exit__(None, None, None)

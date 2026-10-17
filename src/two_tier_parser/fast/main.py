@@ -23,6 +23,7 @@ import os
 import sys
 import threading
 import time
+import uuid
 from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from typing import Optional
@@ -87,7 +88,13 @@ from .. import API_VERSION
 from ..common.json_logging import configure_json_logging, safe_log_value
 from .models import HealthResponse, PageRangeParseResponse, ParseResponse
 from .service import parse_pdf, parse_pdf_page_range
-from .storage import StorageNotConfigured, check_connectivity, read_object, storage_configured
+from .storage import (
+    ObjectTooLarge,
+    StorageNotConfigured,
+    check_connectivity,
+    read_object,
+    storage_configured,
+)
 
 configure_json_logging(service_name="fast-parser")
 
@@ -211,6 +218,48 @@ if WORKERS < 1 or PAGES_WORKERS < 1 or MAX_TASKS < 1 or MAX_INFLIGHT_DOCUMENTS <
     )
 _inflight_documents = 0
 _inflight_lock = asyncio.Lock()
+
+# Largest accepted PDF. Enforced before the document is buffered where the size is known
+# in advance (upload size, object Content-Length) and again on the bytes actually read.
+MAX_PDF_BYTES = 100 * 1024 * 1024
+# Multipart framing adds a little to the request body beyond the file itself.
+_MULTIPART_OVERHEAD_BYTES = 1024 * 1024
+_TOO_LARGE_DETAIL = "File too large (max 100MB)"
+
+
+def _allowed_buckets() -> Optional[set]:
+    """Return the claim-check bucket allow-list, or None when unrestricted.
+
+    PARSER_ALLOWED_BUCKETS is a comma-separated list. Unset or empty keeps the
+    default behavior of reading from any bucket the configured credentials can reach.
+    """
+    raw = os.getenv("PARSER_ALLOWED_BUCKETS", "")
+    names = {name.strip() for name in raw.split(",") if name.strip()}
+    return names or None
+
+
+def _internal_error(message: str, safe_filename: str, exc: Exception) -> HTTPException:
+    """Log the full failure and return a generic 500 that carries only a correlation id.
+
+    Exception text can contain file paths or library internals, so it stays in the
+    server log. The id in the response lets an operator find the matching log line.
+    """
+    correlation_id = uuid.uuid4().hex[:12]
+    logger.error(
+        message,
+        exc_info=exc,
+        extra={
+            "service_name": "fast-parser",
+            "document_name": safe_log_value(safe_filename),
+            "error_type": type(exc).__name__,
+            "error_message": str(exc),
+            "correlation_id": correlation_id,
+        },
+    )
+    return HTTPException(
+        status_code=500,
+        detail=f"Parsing failed (correlation_id={correlation_id})",
+    )
 
 
 @app.middleware("http")
@@ -491,6 +540,14 @@ async def _read_pdf_from_request(
         if not key.lower().endswith(".pdf"):
             raise HTTPException(status_code=400, detail="Only PDF files are supported")
 
+        allowed = _allowed_buckets()
+        if allowed is not None and bucket not in allowed:
+            logger.warning(
+                "Claim-check bucket rejected by PARSER_ALLOWED_BUCKETS",
+                extra={"service_name": "fast-parser", "bucket": safe_log_value(bucket)},
+            )
+            raise HTTPException(status_code=403, detail="Bucket is not permitted")
+
         safe_filename = _sanitize_filename(filename)
         logger.info(
             "Claim-check parse request",
@@ -505,7 +562,9 @@ async def _read_pdf_from_request(
         )
 
         try:
-            pdf_bytes = await asyncio.to_thread(read_object, bucket, key)
+            pdf_bytes = await asyncio.to_thread(read_object, bucket, key, MAX_PDF_BYTES)
+        except ObjectTooLarge:
+            raise HTTPException(status_code=413, detail=_TOO_LARGE_DETAIL)
         except StorageNotConfigured:
             raise HTTPException(
                 status_code=501,
@@ -530,7 +589,10 @@ async def _read_pdf_from_request(
         return pdf_bytes, safe_filename, "claim-check", task_id, start_page, image_opts
 
     elif "multipart/form-data" in content_type:
-        # Legacy multipart path: file uploaded directly
+        # Direct upload path: no object store involved.
+        declared = request.headers.get("content-length", "")
+        if declared.isdigit() and int(declared) > MAX_PDF_BYTES + _MULTIPART_OVERHEAD_BYTES:
+            raise HTTPException(status_code=413, detail=_TOO_LARGE_DETAIL)
         async with request.form() as form:
             file = form.get("file")
             if not isinstance(file, UploadFile):
@@ -538,6 +600,9 @@ async def _read_pdf_from_request(
 
             if not file.filename or not file.filename.lower().endswith(".pdf"):
                 raise HTTPException(status_code=400, detail="Only PDF files are supported")
+
+            if file.size is not None and file.size > MAX_PDF_BYTES:
+                raise HTTPException(status_code=413, detail=_TOO_LARGE_DETAIL)
 
             safe_filename = _sanitize_filename(file.filename)
             logger.info(
@@ -639,8 +704,8 @@ async def parse(request: Request) -> ParseResponse:
             },
         )
 
-        # Validate file size (100MB limit)
-        if file_size > 100 * 1024 * 1024:
+        # Exact check on the bytes actually read (the early checks above cover the common case).
+        if file_size > MAX_PDF_BYTES:
             logger.warning(
                 "File too large",
                 extra={
@@ -649,7 +714,7 @@ async def parse(request: Request) -> ParseResponse:
                     "size_mb": file_size / (1024 * 1024),
                 },
             )
-            raise HTTPException(status_code=413, detail="File too large (max 100MB)")
+            raise HTTPException(status_code=413, detail=_TOO_LARGE_DETAIL)
 
         # Parse PDF in process pool
         try:
@@ -680,25 +745,16 @@ async def parse(request: Request) -> ParseResponse:
 
             # Check if result is None (shouldn't happen with fast parser, but safety check)
             if result is None:
-                logger.error(
-                    "Parsing returned None",
-                    extra={"service_name": "fast-parser", "document_name": safe_filename},
+                raise _internal_error(
+                    "Parsing returned no result", safe_filename, RuntimeError("no result")
                 )
-                raise HTTPException(status_code=500, detail="Parsing failed: No result returned")
 
             # Check if result contains an error
             if "error" in result:
-                logger.error(
-                    "Parsing failed",
-                    extra={
-                        "service_name": "fast-parser",
-                        "document_name": safe_log_value(safe_filename),
-                        "error_message": result.get("error", "Unknown error"),
-                    },
-                )
-                raise HTTPException(
-                    status_code=500,
-                    detail=f"Parsing failed: {result.get('error', 'Unknown error')}",
+                raise _internal_error(
+                    "Parsing reported an error",
+                    safe_filename,
+                    RuntimeError(str(result.get("error", "Unknown error"))),
                 )
 
             # translate preemption into HTTP 409. The caller
@@ -766,17 +822,7 @@ async def parse(request: Request) -> ParseResponse:
             )
             raise _recover_broken_executor(active_executor, stage1=False)
         except Exception as e:
-            logger.error(
-                "Parsing failed",
-                exc_info=True,
-                extra={
-                    "service_name": "fast-parser",
-                    "document_name": safe_log_value(safe_filename),
-                    "error_type": type(e).__name__,
-                    "error_message": str(e),
-                },
-            )
-            raise HTTPException(status_code=500, detail=f"Parsing failed: {str(e)}")
+            raise _internal_error("Parsing failed", safe_filename, e)
 
 
 @app.post("/parse-pages", response_model=PageRangeParseResponse)
@@ -854,9 +900,8 @@ async def parse_pages(
             },
         )
 
-        # Validate file size (100MB limit)
-        if file_size > 100 * 1024 * 1024:
-            raise HTTPException(status_code=413, detail="File too large (max 100MB)")
+        if file_size > MAX_PDF_BYTES:
+            raise HTTPException(status_code=413, detail=_TOO_LARGE_DETAIL)
 
         # submit to the dedicated `pages_executor`, not the shared
         # `executor`. Refresh queue-depth after submit so the gauge reflects
@@ -916,17 +961,7 @@ async def parse_pages(
             )
             raise _recover_broken_executor(active_executor, stage1=True)
         except Exception as e:
-            logger.error(
-                "Page range parsing failed",
-                exc_info=True,
-                extra={
-                    "service_name": "fast-parser",
-                    "document_name": safe_log_value(safe_filename),
-                    "error_type": type(e).__name__,
-                    "error_message": str(e),
-                },
-            )
-            raise HTTPException(status_code=500, detail=f"Parsing failed: {str(e)}")
+            raise _internal_error("Page range parsing failed", safe_filename, e)
 
 
 if __name__ == "__main__":

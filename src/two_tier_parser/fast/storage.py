@@ -47,6 +47,10 @@ class StorageNotConfigured(RuntimeError):
     """Raised when a claim-check read is requested but no object store is configured."""
 
 
+class ObjectTooLarge(RuntimeError):
+    """Raised when an object exceeds the size limit before it is fully buffered."""
+
+
 @dataclass(frozen=True)
 class StoreSettings:
     """Connection settings resolved from the environment."""
@@ -123,18 +127,22 @@ def get_client() -> Any:
     return _client
 
 
-def read_object(bucket: str, key: str) -> bytes:
+def read_object(bucket: str, key: str, max_bytes: Optional[int] = None) -> bytes:
     """Read object bytes synchronously and release the response connection.
 
     Args:
         bucket: Caller-owned S3-compatible bucket name.
         key: Object key validated by the HTTP request handler.
+        max_bytes: Largest object to buffer. The response ``Content-Length`` is checked
+            first, so an oversized object is rejected without reading its body; a
+            response without that header is read at most ``max_bytes + 1`` bytes.
 
     Returns:
         Complete object contents as bytes.
 
     Raises:
         StorageNotConfigured: No object store is configured.
+        ObjectTooLarge: The object is larger than ``max_bytes``.
         Exception: SDK configuration, retrieval, or response reading failed.
             The HTTP handler translates storage failures to HTTP 502.
     """
@@ -151,7 +159,15 @@ def read_object(bucket: str, key: str) -> bytes:
         client = get_client()
         response = client.get_object(bucket, key)
         try:
-            data = response.read()
+            if max_bytes is not None:
+                declared = response.headers.get("Content-Length", "")
+                if declared.isdigit() and int(declared) > max_bytes:
+                    raise ObjectTooLarge(f"object is {declared} bytes; limit is {max_bytes}")
+                data = response.read(max_bytes + 1)
+                if len(data) > max_bytes:
+                    raise ObjectTooLarge(f"object exceeds the {max_bytes} byte limit")
+            else:
+                data = response.read()
             span.set_attribute("file.size_bytes", len(data))
             return data
         finally:
