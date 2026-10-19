@@ -69,6 +69,54 @@ Before deploying, check that:
 11. Uvicorn with `--workers N` starts N independent copies of the service, each with its own pools and admission limits, and its supervisor still prints a few plain-text startup lines. Behind a TLS-terminating proxy, set uvicorn's `FORWARDED_ALLOW_IPS` so trailing-slash redirects keep `https`.
 12. `SERVICE_NAME`, when set, overrides the `service_name` field on every log line.
 
+### Accurate parser: changes callers can observe
+
+- `POST /parse` admits at most `MAX_INFLIGHT_DOCUMENTS` documents at once, running plus
+  queued (default: twice `WORKERS`). Further requests get an immediate 503 with
+  `Retry-After: 5` and are rejected before their upload is read, including behind a
+  path-prefixing proxy (`uvicorn --root-path`). `/health` is never queued behind parsing.
+  A slot stays taken until the worker thread finishes, even if the client disconnects.
+- Unexpected failures, including errors reported by MinerU, return a generic 500 whose
+  detail carries only a `correlation_id` (`Parsing failed (correlation_id=<id>)`); the error
+  text and traceback are in the service log under the same id.
+- Numeric settings (`WORKERS`, `WORKER_MAX_TASKS`, `MAX_INFLIGHT_DOCUMENTS`) treat an empty
+  value as unset, and a malformed or non-positive value stops startup with a message naming
+  the variable.
+- The response size reported in the "Parse complete" log line is measured on the worker
+  thread, so serializing a large result no longer blocks the event loop, and the periodic
+  cleanup log reports the number of tasks it covered (it used to report zero).
+- The response shape is unchanged. `metadata.version` is the installed MinerU version.
+
+### Accurate parser: additions and packaging changes
+
+- MinerU is pinned to the 4.0.12 release and used through its public in-memory API behind
+  one compatibility module (`mineru_adapter.py`), so an upstream change touches one file.
+- A CPU image (`deploy/Dockerfile.accurate.cpu`) runs MinerU's medium-effort pipeline with
+  ONNX models and no GPU. The CUDA image runs the high-effort VLM path on an NVIDIA host.
+- `deploy/entrypoint-accurate.sh` prepares and verifies the model files before serving and
+  fails the container if a repository is incomplete, instead of serving a service that
+  fails on its first request. `MINERU_DOWNLOAD_MODELS` accepts `all`, `pipeline`, `vlm`,
+  `basic` or `standard`.
+- Docker Compose services are now profile based: `accurate-parser` became
+  `accurate-parser-cuda` (profile `cuda`) and `accurate-parser-cpu` (profile `cpu`); start
+  one with `docker compose --profile cpu up`. Model files persist in the `mineru-models`
+  and `cpu-models` volumes; the `huggingface-cache` volume is no longer used.
+- The legacy `MINERU_TOOLS_CONFIG_JSON` variable is still honored as an alias for MinerU 4's
+  `MINERU_CONFIG`; its JSON keys are not read, so move model locations to `model.base_dir`
+  or `MINERU_MODEL_BASE_DIR`.
+
+### Accurate parser: upgrade notes
+
+1. Replace `accurate-parser` with `accurate-parser-cuda` or `accurate-parser-cpu` in scripts
+   and Compose overrides, and pass the profile on the command line.
+2. Treat a 503 from `/parse` as retriable; honor `Retry-After`. Callers that already retry
+   the fast parser's 503 need no other change.
+3. Do not parse the text of a 500 response.
+4. Existing model downloads in the old `huggingface-cache` volume are not reused; the first
+   start downloads the MinerU 4 model repositories.
+5. A tool that read MinerU 2 or 3 internals (magic-pdf JSON keys, `mineru-models-download`)
+   must move to MinerU 4's configuration; the service itself needs no change.
+
 ### Added
 - OpenTelemetry API-only instrumentation for distributed tracing (74+ span points)
 - NullHandler logging pattern for library portability

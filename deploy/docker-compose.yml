@@ -32,12 +32,10 @@ services:
           cpus: '2'
           memory: 2G
 
-  # Accurate Parser - Automatic GPU fallback
-  # - GPU Available: VLM backend (95%+ accuracy, 15-60s/page)
-  # - No GPU: Pipeline backend (80-85% accuracy, 5-15s/page, CPU-only)
-  # - For complex layouts with images, tables, and formulas
-  # - Optional: NVIDIA GPU (Tesla T4 or Ampere+) for highest accuracy
-  accurate-parser:
+  # Linux containers cannot use macOS MPS. Use the CUDA profile on an NVIDIA
+  # host; run the accurate service natively on Apple Silicon for MPS support.
+  accurate-parser-cuda:
+    profiles: [cuda]
     build:
       context: ..
       dockerfile: deploy/Dockerfile.accurate
@@ -45,17 +43,14 @@ services:
     ports:
       - "8005:8005"
     volumes:
-      # Mount HuggingFace cache to persist downloaded models across container restarts
-      - huggingface-cache:/root/.cache/huggingface
+      # Persist MinerU model bundles across container rebuilds
+      - mineru-models:/root/.mineru
     environment:
-      - WORKERS=2                          # Number of thread pool workers
-      - LOG_LEVEL=INFO                     # Logging level
-      - CUDA_VISIBLE_DEVICES=0             # GPU device ID (0 for first GPU)
-      - MINERU_VIRTUAL_VRAM_SIZE=15       # Virtual VRAM size in GB (adjust for your GPU)
-      - UVICORN_TIMEOUT_KEEP_ALIVE=600    # Timeout for VLM processing (10 mins)
-      - TOKENIZERS_PARALLELISM=false      # Disable tokenizer warnings
-      - HF_HUB_ENABLE_HF_TRANSFER=1       # Enable faster downloads
-      - MINERU_TOOLS_CONFIG_JSON=/root/magic-pdf.json  # Tell MinerU where to find config
+      WORKERS: "2"
+      LOG_LEVEL: INFO
+      CUDA_VISIBLE_DEVICES: "${CUDA_VISIBLE_DEVICES:-0}"
+      UVICORN_TIMEOUT_KEEP_ALIVE: "600"
+      TOKENIZERS_PARALLELISM: "false"
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8005/health')"]
       interval: 30s
@@ -63,7 +58,7 @@ services:
       retries: 3
       start_period: 30s
     restart: unless-stopped
-    runtime: nvidia  # Optional: Remove this line for CPU-only deployment
+    runtime: nvidia
     deploy:
       resources:
         limits:
@@ -72,15 +67,42 @@ services:
         reservations:
           cpus: '1'
           memory: 8G
-          devices:  # Optional: Remove this section for CPU-only deployment
+          devices:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
+
+  accurate-parser-cpu:
+    profiles: [cpu]
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.accurate.cpu
+    ports:
+      - "8005:8005"
+    volumes:
+      - cpu-models:/models
+    environment:
+      WORKERS: "2"
+      LOG_LEVEL: INFO
+      MINERU_DEVICE_MODE: cpu
+      MINERU_MODEL_SMALL_BACKEND: onnx
+      MINERU_DOWNLOAD_MODELS: pipeline
+      MINERU_MODEL_SOURCE: huggingface
+      MINERU_MODEL_BASE_DIR: /models
+      HF_HOME: /models/huggingface
+      UVICORN_TIMEOUT_KEEP_ALIVE: "600"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8005/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
 
 networks:
   default:
     name: document-parser-network
 
 volumes:
-  # Persistent volume for HuggingFace models (downloaded on first run)
-  huggingface-cache:
+  mineru-models:
+  cpu-models:

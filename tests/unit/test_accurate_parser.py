@@ -1,7 +1,7 @@
 """Unit tests for accurate parser service."""
 
-import importlib.util
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -17,38 +17,17 @@ from two_tier_parser.accurate.models import (
 )
 from two_tier_parser.accurate.service import parse_pdf
 
-# Check if mineru is available (required for accurate parser)
-# MinerU is a git submodule, so check both installed package and submodule path
-MINERU_AVAILABLE = importlib.util.find_spec("mineru") is not None
-if not MINERU_AVAILABLE:
-    # Try importing from submodule directory
-    mineru_path = Path(__file__).parent.parent.parent.parent / "MinerU"
-    if mineru_path.exists():
-        sys.path.insert(0, str(mineru_path))
-        MINERU_AVAILABLE = importlib.util.find_spec("mineru") is not None
 
-
+@pytest.mark.models
 @pytest.mark.slow
 def test_parse_pdf_basic(single_page_pdf_path):
     """Test basic PDF parsing with accurate parser (single page for faster testing)."""
-    if not MINERU_AVAILABLE:
-        pytest.skip("MinerU not installed. Install with: pip install -e '.[fast,accurate,dev]'")
-
     with open(single_page_pdf_path, "rb") as f:
         pdf_bytes = f.read()
 
     result = parse_pdf(pdf_bytes, single_page_pdf_path.name)
 
-    # Handle GPU out of memory errors gracefully
-    if "error" in result:
-        if "CUDA out of memory" in result.get("error", ""):
-            pytest.skip(
-                f"GPU out of memory - restart container to free GPU memory: {result['error']}"
-            )
-        elif "No module named 'mineru'" in result.get("error", ""):
-            pytest.skip("MinerU not installed. Install with: pip install -e '.[fast,accurate,dev]'")
-        else:
-            pytest.fail(f"Parsing failed: {result.get('error', 'Unknown error')}")
+    assert "error" not in result, result.get("error")
 
     assert "markdown" in result
     assert "metadata" in result
@@ -63,27 +42,16 @@ def test_parse_pdf_basic(single_page_pdf_path):
     assert result["metadata"]["pages"] == 1
 
 
+@pytest.mark.models
 @pytest.mark.slow
 def test_parse_pdf_metadata(single_page_pdf_path):
     """Test that metadata is correctly structured (single page for faster testing)."""
-    if not MINERU_AVAILABLE:
-        pytest.skip("MinerU not installed. Install with: pip install -e '.[fast,accurate,dev]'")
-
     with open(single_page_pdf_path, "rb") as f:
         pdf_bytes = f.read()
 
     result = parse_pdf(pdf_bytes, single_page_pdf_path.name)
 
-    # Handle GPU out of memory errors gracefully
-    if "error" in result:
-        if "CUDA out of memory" in result.get("error", ""):
-            pytest.skip(
-                f"GPU out of memory - restart container to free GPU memory: {result['error']}"
-            )
-        elif "No module named 'mineru'" in result.get("error", ""):
-            pytest.skip("MinerU not installed. Install with: pip install -e '.[fast,accurate,dev]'")
-        else:
-            pytest.fail(f"Parsing failed: {result.get('error', 'Unknown error')}")
+    assert "error" not in result, result.get("error")
 
     metadata = result["metadata"]
     assert "pages" in metadata
@@ -95,29 +63,17 @@ def test_parse_pdf_metadata(single_page_pdf_path):
     assert "accuracy_tier" in metadata
 
 
+@pytest.mark.models
 @pytest.mark.slow
 def test_parse_response_model(single_page_pdf_path):
     """Test that result matches ParseResponse model (single page for faster testing)."""
-    if not MINERU_AVAILABLE:
-        pytest.skip("MinerU not installed. Install with: pip install -e '.[fast,accurate,dev]'")
-
     with open(single_page_pdf_path, "rb") as f:
         pdf_bytes = f.read()
 
     result = parse_pdf(pdf_bytes, single_page_pdf_path.name)
 
-    # Handle GPU out of memory errors gracefully
-    if "error" in result:
-        if "CUDA out of memory" in result.get("error", ""):
-            pytest.skip(
-                f"GPU out of memory - restart container to free GPU memory: {result['error']}"
-            )
-        elif "No module named 'mineru'" in result.get("error", ""):
-            pytest.skip("MinerU not installed. Install with: pip install -e '.[fast,accurate,dev]'")
-        else:
-            pytest.fail(f"Parsing failed: {result.get('error', 'Unknown error')}")
+    assert "error" not in result, result.get("error")
 
-    # Should be able to create ParseResponse from result
     response = ParseResponse(**result)
     assert response.markdown is not None
     assert response.metadata is not None
@@ -159,3 +115,41 @@ def test_formula_data_model():
     )
     assert formula_data.formula_id == "test_formula_1"
     assert formula_data.latex == "E = mc^2"
+
+
+def test_parse_pdf_uses_explicit_mps_for_pipeline(monkeypatch):
+    """Apple MPS is reported as accelerated pipeline inference, not CUDA VLM."""
+    from two_tier_parser.accurate import service
+
+    torch = types.SimpleNamespace(
+        cuda=types.SimpleNamespace(
+            is_available=lambda: False,
+            empty_cache=lambda: None,
+        ),
+        backends=types.SimpleNamespace(mps=types.SimpleNamespace(is_available=lambda: True)),
+    )
+    mineru_version = types.ModuleType("mineru.version")
+    mineru_version.__version__ = "test-version"
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    monkeypatch.setitem(sys.modules, "mineru.version", mineru_version)
+    monkeypatch.setenv("MINERU_DEVICE_MODE", "mps")
+    calls = []
+
+    def fake_analyze(pdf_bytes, *, use_vlm):
+        calls.append(use_vlm)
+        return {
+            "markdown": "sample",
+            "images": [],
+            "tables": [],
+            "formulas": [],
+            "pages": 1,
+        }
+
+    monkeypatch.setattr(service, "analyze", fake_analyze)
+
+    result = parse_pdf(b"pdf", "sample.pdf")
+
+    assert calls == [False]
+    assert result["metadata"]["backend"] == "pipeline"
+    assert result["metadata"]["gpu_used"] is True
+    assert result["metadata"]["accuracy_tier"] == "high"

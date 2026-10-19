@@ -1,0 +1,20 @@
+FROM python:3.12-slim
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgl1 libglib2.0-0 libgomp1 fonts-noto-core fonts-noto-cjk \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY MinerU /opt/MinerU
+RUN pip install --no-cache-dir -e /opt/MinerU
+COPY pyproject.toml README.md LICENSE ./
+COPY src/ src/
+RUN pip install --no-cache-dir '.[accurate]'
+COPY deploy/entrypoint-accurate.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+ENV WORKERS=2 MINERU_DEVICE_MODE=cpu MINERU_DOWNLOAD_MODELS=pipeline \
+    MINERU_MODEL_SMALL_BACKEND=onnx MINERU_MODEL_SOURCE=huggingface \
+    MINERU_MODEL_BASE_DIR=/models \
+    HF_HOME=/models/huggingface
+EXPOSE 8005
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8005/health')"
+ENTRYPOINT ["/entrypoint.sh"]

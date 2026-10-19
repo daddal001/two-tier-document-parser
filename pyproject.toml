@@ -197,19 +197,8 @@ module = [
     "mineru.*",
     "pymupdf4llm.*",
     "torch.*",
-    "transformers.*",
 ]
 ignore_missing_imports = true
-
-# Type debt that predates the mypy gate. Every other module is checked strictly.
-# Remove an entry when its module is cleaned up; do not add new entries.
-[[tool.mypy.overrides]]
-module = [
-    "two_tier_parser.accurate.main",
-    "two_tier_parser.accurate.service",
-    "two_tier_parser.accurate.core.telemetry",
-]
-ignore_errors = true
 
 [tool.bandit]
 # B101: asserts are used for internal invariants. B104: services bind 0.0.0.0 inside containers
