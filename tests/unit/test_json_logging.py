@@ -180,3 +180,22 @@ def test_safe_log_value_escapes_line_breaks():
     assert safe_log_value("a\nb\rc") == "a\\nb\\rc"
     assert safe_log_value(None) is None
     assert safe_log_value(5) == "5"
+
+
+def test_uvicorn_color_message_is_not_emitted():
+    assert "color_message" not in _format(_record(color_message="\x1b[36mhi"))
+
+
+def test_custom_uvicorn_handlers_are_left_alone(clean_root):
+    clean_root.handlers.clear()
+    custom = logging.StreamHandler()
+    custom.setFormatter(logging.Formatter("%(message)s"))
+    uvicorn_logger = logging.getLogger("uvicorn")
+    saved = uvicorn_logger.handlers[:], uvicorn_logger.propagate
+    uvicorn_logger.handlers[:] = [custom]
+    uvicorn_logger.propagate = False
+    try:
+        configure_json_logging()
+        assert uvicorn_logger.handlers == [custom]
+    finally:
+        uvicorn_logger.handlers[:], uvicorn_logger.propagate = saved

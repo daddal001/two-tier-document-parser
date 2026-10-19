@@ -27,7 +27,8 @@ import time
 from typing import Any, Dict, Optional, Union
 
 _RESERVED = {"timestamp", "level", "logger", "message", "exception", "trace_id", "span_id"}
-_STANDARD = set(logging.makeLogRecord({}).__dict__) | {"message", "asctime"}
+# color_message is uvicorn's ANSI-colored duplicate of the message.
+_STANDARD = set(logging.makeLogRecord({}).__dict__) | {"message", "asctime", "color_message"}
 _DEFAULT_SERVICE = "two-tier-parser"
 
 
@@ -115,6 +116,33 @@ class JsonFormatter(logging.Formatter):
             return json.dumps(canonical, default=str)
 
 
+def _route_uvicorn_through_root() -> None:
+    """Send uvicorn's own loggers (startup, errors, access) through the root handler.
+
+    uvicorn installs plain-text handlers on ``uvicorn`` and ``uvicorn.access`` and stops
+    propagation, which would mix text lines into the JSON stream. The app is imported
+    after uvicorn configures logging, so removing them here takes effect. Nothing is
+    changed when the host application already owns the logging configuration, or when the
+    operator supplied uvicorn handlers of their own (``--log-config``).
+    """
+    try:
+        from uvicorn.logging import AccessFormatter, DefaultFormatter
+    except ImportError:
+        return
+    for name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+        target = logging.getLogger(name)
+        # Only uvicorn's own default handlers are replaced; a handler from the
+        # operator's --log-config is left in place.
+        defaults = [
+            h
+            for h in target.handlers
+            if isinstance(h.formatter, (DefaultFormatter, AccessFormatter))
+        ]
+        if len(defaults) == len(target.handlers):
+            target.handlers.clear()
+            target.propagate = True
+
+
 def configure_json_logging(
     level: Union[str, int, None] = None, service_name: str = _DEFAULT_SERVICE
 ) -> None:
@@ -125,7 +153,8 @@ def configure_json_logging(
         service_name: Default ``service_name`` field; ``SERVICE_NAME`` overrides it.
 
     An embedding application's existing logging configuration takes precedence
-    (``logging.basicConfig`` does nothing when the root logger has handlers).
+    (``logging.basicConfig`` does nothing when the root logger has handlers). When the
+    handler is installed, uvicorn's loggers are routed through it so the stream is uniform.
     """
     requested = level if level is not None else os.getenv("LOG_LEVEL")
     resolved = resolve_level(requested)
@@ -135,6 +164,8 @@ def configure_json_logging(
     else:
         handler.setFormatter(JsonFormatter(service_name))
     logging.basicConfig(level=resolved, handlers=[handler])
+    if handler in logging.getLogger().handlers:
+        _route_uvicorn_through_root()
     if requested and not str(requested).strip().isdigit():
         if str(requested).strip().upper() not in logging.getLevelNamesMapping():
             logging.getLogger(__name__).warning(

@@ -183,3 +183,34 @@ def test_service_starts_and_serves_empty_metrics_without_prometheus(monkeypatch)
     finally:
         monkeypatch.undo()
         _reload_main()
+
+
+@pytest.mark.parametrize(
+    ("env", "message"),
+    [
+        ({"WORKERS": "abc"}, "WORKERS must be a number"),
+        ({"WORKERS": "0"}, "WORKERS must be at least 1"),
+        ({"PAGES_WORKERS": "x"}, "PAGES_WORKERS must be a number"),
+        ({"OBJECT_STORE_HEALTH_TIMEOUT_SECONDS": "soon"}, "OBJECT_STORE_HEALTH_TIMEOUT_SECONDS"),
+    ],
+)
+def test_bad_sizing_settings_name_the_variable(monkeypatch, env, message):
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    try:
+        with pytest.raises(ValueError, match=message):
+            _reload_main()
+    finally:
+        monkeypatch.undo()
+        _reload_main()
+
+
+def test_empty_sizing_settings_mean_unset(monkeypatch):
+    monkeypatch.setenv("WORKERS", "")
+    monkeypatch.setenv("MAX_INFLIGHT_DOCUMENTS", " ")
+    try:
+        module = _reload_main()
+        assert module.WORKERS >= 1 and module.MAX_INFLIGHT_DOCUMENTS >= 2
+    finally:
+        monkeypatch.undo()
+        _reload_main()

@@ -145,8 +145,26 @@ def _default_workers() -> int:
     return max(1, os.cpu_count() or 2)
 
 
-WORKERS = int(os.getenv("WORKERS", str(_default_workers())))
-MAX_TASKS = int(os.getenv("WORKER_MAX_TASKS", "50"))
+def _env_number(name: str, default: Any, kind: Any, minimum: Optional[float] = None) -> Any:
+    """Read a numeric setting, treating an empty value as unset.
+
+    An empty variable is what templated deployments produce for an unset value. A
+    malformed or out-of-range value stops startup with a message naming the variable.
+    """
+    raw = (os.getenv(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        value = kind(raw)
+    except ValueError:
+        raise ValueError(f"{name} must be a number, got {raw!r}") from None
+    if minimum is not None and value < minimum:
+        raise ValueError(f"{name} must be at least {minimum}, got {raw!r}")
+    return value
+
+
+WORKERS = _env_number("WORKERS", _default_workers(), int, minimum=1)
+MAX_TASKS = _env_number("WORKER_MAX_TASKS", 50, int, minimum=1)
 
 
 def _new_pool(workers: int) -> ProcessPoolExecutor:
@@ -171,7 +189,7 @@ executor = _new_pool(WORKERS)
 # Eliminates priority inversion against multi-minute `/parse` calls on the
 # shared `executor`. The established default keeps at least two page workers;
 # deployments with tighter capacity can override this explicitly.
-PAGES_WORKERS = int(os.getenv("PAGES_WORKERS", str(max(2, WORKERS // 2))))
+PAGES_WORKERS = _env_number("PAGES_WORKERS", max(2, WORKERS // 2), int, minimum=1)
 pages_executor = _new_pool(PAGES_WORKERS)
 _executor_reset_lock = threading.Lock()
 
@@ -209,7 +227,7 @@ def _recover_broken_executor(
 
 
 # backpressure threshold: 503 when queue depth > BACKPRESSURE_FACTOR × workers.
-PAGES_BACKPRESSURE_FACTOR = int(os.getenv("PAGES_BACKPRESSURE_FACTOR", "2"))
+PAGES_BACKPRESSURE_FACTOR = _env_number("PAGES_BACKPRESSURE_FACTOR", 2, int)
 
 # Stage-2 `/parse` admission control. Symmetric to the `/parse-pages`
 # backpressure but on the SHARED `executor`. Without this, `/parse` had no
@@ -217,19 +235,22 @@ PAGES_BACKPRESSURE_FACTOR = int(os.getenv("PAGES_BACKPRESSURE_FACTOR", "2"))
 # the shared process pool, growing latency and memory instead of shedding load.
 # A 503 lets callers apply bounded backoff. This pool-specific check falls open
 # if the executor's private queue attribute is unavailable.
-PARSE_BACKPRESSURE_FACTOR = int(os.getenv("PARSE_BACKPRESSURE_FACTOR", "2"))
+PARSE_BACKPRESSURE_FACTOR = _env_number("PARSE_BACKPRESSURE_FACTOR", 2, int)
 
 # Bound the complete document working set (uploads/storage reads plus executor work), not
 # only the private ProcessPoolExecutor queue. This prevents concurrent requests
 # from each passing a stale queue-depth check and buffering unbounded PDFs.
 # Default to the configured process slots for standalone deployments. Callers
 # can set a different positive bound for their memory and latency requirements.
-MAX_INFLIGHT_DOCUMENTS = int(os.getenv("MAX_INFLIGHT_DOCUMENTS", str(WORKERS + PAGES_WORKERS)))
-STORAGE_HEALTH_TIMEOUT_SECONDS = float(
-    os.getenv("OBJECT_STORE_HEALTH_TIMEOUT_SECONDS")
-    or os.getenv("MINIO_HEALTH_TIMEOUT_SECONDS")
-    or "1.5"
+MAX_INFLIGHT_DOCUMENTS = _env_number(
+    "MAX_INFLIGHT_DOCUMENTS", WORKERS + PAGES_WORKERS, int, minimum=1
 )
+_HEALTH_TIMEOUT_NAME = (
+    "OBJECT_STORE_HEALTH_TIMEOUT_SECONDS"
+    if os.getenv("OBJECT_STORE_HEALTH_TIMEOUT_SECONDS")
+    else "MINIO_HEALTH_TIMEOUT_SECONDS"
+)
+STORAGE_HEALTH_TIMEOUT_SECONDS = _env_number(_HEALTH_TIMEOUT_NAME, 1.5, float, minimum=0)
 if WORKERS < 1 or PAGES_WORKERS < 1 or MAX_TASKS < 1 or MAX_INFLIGHT_DOCUMENTS < 1:
     raise ValueError(
         "WORKERS, PAGES_WORKERS, WORKER_MAX_TASKS, and MAX_INFLIGHT_DOCUMENTS must be positive"
@@ -280,6 +301,23 @@ def _internal_error(message: str, safe_filename: str, exc: Exception) -> HTTPExc
     )
 
 
+_PARSER_PATHS = {"/parse", "/parse-pages"}
+
+
+def _route_path(scope: Any) -> str:
+    """Return the request path the router sees, without the ASGI ``root_path`` prefix.
+
+    Behind a path-prefixing proxy, servers such as uvicorn (``--root-path``) put the prefix
+    in ``scope["path"]`` and the router strips it again; comparing the raw path would
+    miss ``/parse`` and skip the body limit and admission control.
+    """
+    path = scope["path"]
+    root = (scope.get("root_path") or "").rstrip("/")
+    if root and (path == root or path.startswith(root + "/")):
+        path = path[len(root) :]
+    return path.rstrip("/") or "/"
+
+
 def _exceeds(declared: str, limit: int) -> bool:
     """Return True when a ``Content-Length`` value is a number above the limit.
 
@@ -316,7 +354,7 @@ class BodyLimitMiddleware:
         if scope["type"] != "http" or scope["method"] != "POST":
             await self.app(scope, receive, send)
             return
-        if scope["path"] not in {"/parse", "/parse-pages"}:
+        if _route_path(scope) not in _PARSER_PATHS:
             await self.app(scope, receive, send)
             return
 
@@ -358,7 +396,8 @@ async def bound_parser_inflight_documents(request: Request, call_next):
     process. A 503 is retriable and deliberately includes ``Retry-After``.
     """
     global _inflight_documents
-    if request.url.path not in {"/parse", "/parse-pages"}:
+    route_path = _route_path(request.scope)
+    if route_path not in _PARSER_PATHS:
         return await call_next(request)
 
     async with _inflight_lock:
@@ -370,7 +409,7 @@ async def bound_parser_inflight_documents(request: Request, call_next):
                     "component": "backpressure",
                     "inflight_documents": _inflight_documents,
                     "max_inflight_documents": MAX_INFLIGHT_DOCUMENTS,
-                    "endpoint": request.url.path,
+                    "endpoint": route_path,
                 },
             )
             return JSONResponse(

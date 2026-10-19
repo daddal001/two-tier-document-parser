@@ -35,8 +35,8 @@ COPY src/ src/
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -c /tmp/constraints.txt ".[fast,telemetry,telemetry-sdk]"
 
-# Run unprivileged. HOME is writable so libraries that cache under it work with a
-# read-only root filesystem.
+# Run unprivileged. HOME points at /tmp; with a read-only root filesystem mount a
+# writable /tmp (for example --tmpfs /tmp), which uploads over 1 MB also need.
 ENV HOME=/tmp
 ENV WORKERS=4
 ENV LOG_LEVEL=INFO

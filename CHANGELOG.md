@@ -23,6 +23,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `"deadline"` and `metadata.last_page_parsed` names the last page included. The key is
   absent on a complete parse.
 - Oversized input is rejected before it is buffered (same 413, same 100 MiB limit). Uploads are counted as they stream, so a chunked body, or one that understates its `Content-Length`, is cut off at the limit before the rest is spooled to temporary storage. A JSON request body is capped at 1 MiB.
+- Numeric settings (`WORKERS`, `PAGES_WORKERS`, `MAX_INFLIGHT_DOCUMENTS`, the health timeout and so on) treat an empty value as unset, and a malformed or non-positive value stops startup with a message naming the variable. A `--log-config` handler on uvicorn's loggers is left in place. The ANSI `color_message` field uvicorn adds is no longer written.
+- Request limits and admission control match `/parse` and `/parse-pages` after removing the server's `root_path`, so they also apply behind a path-prefixing proxy (`uvicorn --root-path`).
+- Under the default container command every log line is JSON: uvicorn's startup, error and access records go through the same formatter. Hosts that configure logging themselves are left alone.
 - Parser worker processes apply the same JSON logging configuration as the server, including pools that replace a failed one, so worker log lines are structured and honor `LOG_LEVEL` under every multiprocessing start method.
 - A claim-check request with no object store configured returns 501.
 - Log lines are one JSON object each with `timestamp`, `level`, `logger`, `message` and
@@ -62,7 +65,8 @@ Before deploying, check that:
    default `/dev/shm`.
 10. The running image matches the commit you believe it is; `pip freeze` in the image
    should be compared with the `uv.lock` of the release before switching.
-11. `SERVICE_NAME`, when set, overrides the `service_name` field on every log line.
+11. Uvicorn with `--workers N` starts N independent copies of the service, each with its own pools and admission limits, and its supervisor still prints a few plain-text startup lines. Behind a TLS-terminating proxy, set uvicorn's `FORWARDED_ALLOW_IPS` so trailing-slash redirects keep `https`.
+12. `SERVICE_NAME`, when set, overrides the `service_name` field on every log line.
 
 ### Added
 - OpenTelemetry API-only instrumentation for distributed tracing (74+ span points)
