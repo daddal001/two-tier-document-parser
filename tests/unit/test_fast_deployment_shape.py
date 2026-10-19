@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -13,6 +14,11 @@ from pathlib import Path
 import pytest
 
 SRC = str(Path(__file__).parents[2] / "src")
+
+# onnxruntime's C++ logger writes this to stderr, bypassing Python logging, when the process
+# may use only some of the host's CPUs (a CPU set, as on CI runners). It comes from the layout
+# model's session, not from this service, so it is the one known non-JSON line.
+_NATIVE_LIBRARY_LINE = re.compile(r"\[[A-Z]:onnxruntime:")
 
 sys.path.insert(0, SRC)
 
@@ -116,7 +122,11 @@ def test_every_server_log_line_is_json(server):
     _request(base + "/health")
     _request(base + "/parse", b"{}", {"content-type": "application/json"})
     time.sleep(0.5)
-    lines = [line for line in log.read_text().splitlines() if line.strip()]
+    lines = [
+        line
+        for line in log.read_text().splitlines()
+        if line.strip() and not _NATIVE_LIBRARY_LINE.search(line)
+    ]
     assert lines
     for line in lines:
         json.loads(line)  # raises on any plain-text line, including uvicorn's access log
