@@ -77,7 +77,7 @@ hooks:
 # Installs exactly the versions in uv.lock into ./.venv (requires uv). Activate it with
 # `source .venv/bin/activate` so the pre-commit hooks and make targets find the tools.
 install:
-	uv sync --extra fast --extra dev --extra cancellation
+	uv sync --extra fast --extra dev --extra cancellation --extra telemetry --extra telemetry-sdk
 	@echo "Activate the environment: source .venv/bin/activate"
 
 dev: install hooks

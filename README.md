@@ -642,19 +642,24 @@ can retrieve a PDF from any object store and send its bytes as multipart field
 persist the returned output. Direct uploads do not access an object store.
 JSON bucket/key requests use the existing S3-compatible claim-check adapter;
 they do not implement every provider's native API. Admission applies to both
-input methods. The existing health response reports degraded when the optional
-storage adapter is unavailable, without preventing direct uploads.
+input methods. With no object store configured, `/health` reports `healthy` and
+`storage_configured: false`; it reports `degraded` only when a store is
+configured and unreachable. A claim-check request with no store configured
+returns 501, and direct uploads keep working.
 
-For the optional S3-compatible adapter, configure these existing environment
-variables (legacy names are retained for compatibility):
+For the optional S3-compatible adapter, configure these environment variables.
+The `MINIO_*` names are accepted as fallbacks, so existing deployments keep
+working unchanged:
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `MINIO_ENDPOINT` | `minio:9000` | Object-store host and port, without a URL scheme |
-| `MINIO_ACCESS_KEY` | `MINIO_ROOT_USER`, then empty | Adapter access key |
-| `MINIO_SECRET_KEY` | `MINIO_ROOT_PASSWORD`, then empty | Adapter secret key |
-| `MINIO_SECURE` | `false` | Set to `true` for HTTPS |
-| `MINIO_HEALTH_TIMEOUT_SECONDS` | `1.5` | HTTP health handler's storage-check deadline in seconds |
+| `OBJECT_STORE_ENDPOINT` | `minio:9000` once another store setting is present | Object-store host and port, without a URL scheme (fallback `MINIO_ENDPOINT`) |
+| `OBJECT_STORE_ACCESS_KEY` | `MINIO_ACCESS_KEY`, `MINIO_ROOT_USER`, then empty | Adapter access key |
+| `OBJECT_STORE_SECRET_KEY` | `MINIO_SECRET_KEY`, `MINIO_ROOT_PASSWORD`, then empty | Adapter secret key |
+| `OBJECT_STORE_SECURE` | `false` | Set to `true` for HTTPS (fallback `MINIO_SECURE`) |
+| `OBJECT_STORE_REGION` | unset | Region name for stores that require one |
+| `OBJECT_STORE_HEALTH_TIMEOUT_SECONDS` | `1.5` | HTTP health handler's storage-check deadline in seconds (fallback `MINIO_HEALTH_TIMEOUT_SECONDS`) |
+| `PARSER_ALLOWED_BUCKETS` | unset (any bucket) | Comma-separated allow-list; other buckets return 403 |
 
 Supply credentials through your deployment's secret mechanism. Use HTTPS for
 remote storage and grant only the bucket access required by your callers.

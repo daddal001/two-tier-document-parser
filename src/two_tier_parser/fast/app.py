@@ -1,12 +1,12 @@
 """Backwards-compatible module for fast parser.
 
 This file exists for backwards compatibility. The entry point has been
-renamed from app.py to main.py following industry standards.
+moved from app.py to main.py; existing imports remain supported.
 
 New code should use:
     from two_tier_parser.fast.main import app
 
-This module will be removed in a future version.
+Importing this wrapper emits a DeprecationWarning. No removal release is scheduled.
 """
 
 import warnings

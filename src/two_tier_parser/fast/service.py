@@ -1,25 +1,32 @@
-"""PyMuPDF4LLM wrapper for fast PDF parsing.
+"""PyMuPDF4LLM extraction with page recovery and bounded image output.
 
-Provides ultra-fast markdown extraction (~1s/page) with page-by-page error recovery.
+The full-document path reuses one in-memory PyMuPDF document. If full-document
+Markdown conversion raises a recognized missing-table or invalid-text-page
+error, it retries page by page and records pages that repeat those errors.
+Unrelated conversion failures propagate.
+Requests with task_id use a page-by-page path with optional Redis cancellation
+checks and a resume cursor. Redis is not needed for ordinary parsing.
 
-Span hierarchy:
-    parse_pdf (root)
-        ├── tempfile.create
+Image extraction deduplicates by content hash and applies caller-configurable
+count, encoded-byte, and pixel limits. The PDF handle is closed in finally.
+
+Span hierarchy (branches depend on the request):
+    parse_pdf
         ├── pdf.load
-        ├── pdf.fast_parse (attempt full doc)
-        │   └── pymupdf4llm.to_markdown
-        ├── pdf.page_by_page_parse (fallback on error)
-        │   └── loop.pages
-        │       ├── pdf.page[0].parse
-        │       ├── pdf.page[1].parse
-        │       └── ... (per page)
-        ├── pdf.result_join
-        └── tempfile.cleanup
+        ├── pdf.fast_parse (full-document attempt)
+        ├── pdf.page_by_page_parse (recovery)
+        ├── pdf.preemptable_parse (task_id supplied)
+        ├── pdf.extract_images (when enabled)
+        └── per-page parsing spans
+
+parse_pdf_page_range provides the dedicated preview path; its HTTP endpoint
+uses a separate process pool. Timing depends on content and worker resources.
 """
 
 import base64
 import gc
 import hashlib
+import importlib
 import logging
 import os
 import time
@@ -30,7 +37,7 @@ from typing import Any, Dict, Iterable, List, Optional
 # FAST_PARSER_DISABLE_LAYOUT=1 skips the import as an emergency escape hatch.
 if os.getenv("FAST_PARSER_DISABLE_LAYOUT", "").strip().lower() not in {"1", "true", "yes"}:
     try:
-        import pymupdf.layout  # noqa: F401
+        importlib.import_module("pymupdf.layout")
     except Exception:
         # Missing module (older pymupdf4llm) or platform incompatibility; run
         # stock pymupdf4llm without layout rather than failing the whole parser.
@@ -94,9 +101,8 @@ def _is_cancelled(task_id: Optional[str]) -> bool:
 
 # Optional OpenTelemetry tracing (API-only, no-op without SDK)
 try:
-    from .core.telemetry import OTEL_AVAILABLE, traced_operation
+    from .core.telemetry import traced_operation
 except ImportError:
-    OTEL_AVAILABLE = False
 
     def traced_operation(name, attributes=None):
         """No-op context manager when telemetry not available."""
@@ -126,7 +132,7 @@ except ImportError:
 
 # image extraction via direct PyMuPDF API (not pymupdf4llm.write_images).
 # Bypasses open upstream bug pymupdf4llm#352 (image_path ignored under layout).
-# OWASP ASVS V12 caps enforced: count, bytes, pixels.
+# Application image-extraction caps enforced: count, bytes, pixels.
 
 # Sentinel for "extraction truncated by cap" — emitted in result metadata so
 # Prometheus + caller can alert on runaway-image PDFs.
@@ -153,15 +159,23 @@ def extract_images(
 
     Returns a dict: ``{"images": [ImageData-shaped dicts], "truncated": <reason|None>, "total_bytes": int}``.
     Deduplicates by SHA-256 content hash — the same PDF xref referenced across
-    multiple pages (e.g. a header logo) uploads once with ``pages=[0, 1, 2, ...]``.
+    multiple pages (e.g. a header logo) appears once with ``pages=[0, 1, 2, ...]``.
 
-    Caps (OWASP ASVS V12 + issue #1740 pixel-flood):
+    Args:
+        doc: Open PyMuPDF document; the caller retains ownership of its handle.
+        page_range: Zero-based page indexes, or None for every page.
+        max_count: Maximum distinct images returned.
+        max_bytes: Maximum total raw image bytes before base64 encoding.
+        max_pixels: Maximum pixel area of a single image.
+
+    Caps (Application image-extraction):
         max_count: hard cap on distinct images returned
         max_bytes: cap on total decoded image bytes
         max_pixels: cap on any single image's pixel area (width × height)
 
     When a cap is hit, extraction stops and ``truncated`` is set to the reason.
-    Callers MUST surface this to the user (metadata flag + Prometheus counter).
+    HTTP callers surface this as metadata.images_truncated; the preview route
+    also increments its image-truncation counter.
     """
     if page_range is None:
         page_range = range(len(doc))
@@ -194,7 +208,7 @@ def extract_images(
             if not raw:
                 continue
 
-            # OWASP ASVS V12.2 / #1740 pixel-flood check BEFORE expensive ops
+            # Per-image pixel limit pixel-flood check BEFORE expensive ops
             width = int(info.get("width", 0))
             height = int(info.get("height", 0))
             if width * height > max_pixels:
@@ -274,8 +288,10 @@ def parse_pdf(
 ) -> Dict[str, Any]:
     """Parse PDF using PyMuPDF4LLM with page-by-page error recovery.
 
-    If individual pages cause errors (e.g., table detection bug), skip those pages
-    and continue parsing the rest of the document.
+    Full-document conversion is retried page by page for AttributeError or
+    ValueError messages containing "'NoneType' object has no attribute 'tables'"
+    or "not a textpage". Pages repeating a recognized error receive Markdown
+    placeholders and 1-based skipped_pages entries; other errors propagate.
 
     Preemption : when ``task_id`` is provided, parsing iterates
     page-by-page and between each page checks the Redis ``parse_cancel:{task_id}``
@@ -293,17 +309,52 @@ def parse_pdf(
             previously preempted parse managed by the caller.
         progress_ceiling: Fraction of total pages above which preemption is
             ignored (near-finished work is not discarded). Default 0.8.
+        extract_images_flag: Include deduplicated embedded images when true.
+        image_max_count: Maximum distinct images returned.
+        image_max_bytes: Maximum total raw image bytes before base64 encoding.
+        image_max_pixels: Maximum pixel area per image.
 
     Returns:
         Dictionary with markdown content and metadata.
         Metadata includes ``skipped_pages`` list if any pages failed to parse,
-        plus ``preempted`` and ``last_page_parsed`` when preempted.
+        plus ``preempted`` and ``last_page_parsed`` when preempted. When the
+        wall-clock deadline stops a task-aware parse, ``truncated`` is
+        ``"deadline"`` and ``last_page_parsed`` is the last page included.
+
+    Raises:
+        Exception: PDF loading or an unrecognized conversion error failed.
+            Recognized page errors follow the recovery path described above.
     """
-    start_time = time.time()
-    parse_span_ctx = tracer.start_as_current_span(
+    with tracer.start_as_current_span(
         "parse_pdf", attributes={"service_name": "fast-parser", "document_name": filename}
-    )
-    parse_span_ctx.__enter__()
+    ):
+        return _parse_pdf(
+            pdf_bytes,
+            filename,
+            task_id,
+            start_page,
+            progress_ceiling,
+            extract_images_flag,
+            image_max_count,
+            image_max_bytes,
+            image_max_pixels,
+        )
+
+
+def _parse_pdf(
+    pdf_bytes: bytes,
+    filename: str,
+    task_id: Optional[str],
+    start_page: int,
+    progress_ceiling: float,
+    extract_images_flag: bool,
+    image_max_count: int,
+    image_max_bytes: int,
+    image_max_pixels: int,
+) -> Dict[str, Any]:
+    """Parse inside the ``parse_pdf`` span; see ``parse_pdf`` for the contract."""
+    start_time = time.time()
+    doc = None
 
     import pymupdf
 
@@ -311,29 +362,30 @@ def parse_pdf(
     # stream=bytes since 1.14.13. Single open (previously this function opened
     # the file 3 times: page count, full parse, fallback). Reuse one handle
     # for the entire request to save ~2× open overhead on small docs.
-    with traced_operation(
-        "pdf.load", {"file_name": filename, "pdf_size_bytes": len(pdf_bytes)}
-    ) as span:
-        doc = pymupdf.open(stream=pdf_bytes, filetype="pdf")
-        total_pages = len(doc)
-        if span:
-            span.set_attribute("total_pages", total_pages)
-            span.set_attribute("pdf_size_bytes", len(pdf_bytes))
-        logger.debug(
-            "PDF loaded",
-            extra={
-                "service_name": "fast-parser",
-                "page_count": total_pages,
-                "document_name": filename,
-            },
-        )
-
     try:
+        with traced_operation(
+            "pdf.load", {"file_name": filename, "pdf_size_bytes": len(pdf_bytes)}
+        ) as span:
+            doc = pymupdf.open(stream=pdf_bytes, filetype="pdf")
+            total_pages = len(doc)
+            if span:
+                span.set_attribute("total_pages", total_pages)
+                span.set_attribute("pdf_size_bytes", len(pdf_bytes))
+            logger.debug(
+                "PDF loaded",
+                extra={
+                    "service_name": "fast-parser",
+                    "page_count": total_pages,
+                    "document_name": filename,
+                },
+            )
+
         # Preemptable path : task_id present means Stage 2 resume/cancel
         # semantics. We iterate page-by-page and check parse_cancel:{task_id}
         # between pages so long parses can be preempted by Stage 1 partial parses.
         skipped_pages = []
         preempted = False
+        deadline_truncated = False
         last_page_parsed = -1
 
         if task_id is not None:
@@ -348,7 +400,6 @@ def parse_pdf(
                 },
             ) as preempt_span:
                 markdown_parts = []
-                deadline_truncated = False
                 effective_start = max(0, min(start_page, total_pages))
                 for page_num in range(effective_start, total_pages):
                     # Wall-clock deadline (between-pages): bound a runaway many-page
@@ -527,13 +578,13 @@ def parse_pdf(
 
         processing_time_ms = int((time.time() - start_time) * 1000)
 
-        result = {
+        result: Dict[str, Any] = {
             "markdown": markdown_text,
             "metadata": {
                 "pages": total_pages,
                 "processing_time_ms": processing_time_ms,
                 "parser": "pymupdf4llm",
-                "version": "0.2.0",
+                "version": getattr(pymupdf4llm, "__version__", "unknown"),
                 "filename": filename,
             },
         }
@@ -544,6 +595,11 @@ def parse_pdf(
             result["metadata"]["preempted"] = preempted
             result["metadata"]["last_page_parsed"] = last_page_parsed
             result["metadata"]["start_page"] = start_page
+
+        # A deadline stop returns HTTP 200 with partial Markdown; the marker keeps a caller
+        # from mistaking it for a complete parse.
+        if deadline_truncated:
+            result["metadata"]["truncated"] = "deadline"
 
         # Add skipped pages info if any
         if skipped_pages:
@@ -622,12 +678,13 @@ def parse_pdf(
         # no tempfile; single doc handle closes here. gc.collect()
         # still useful in long-lived ProcessPool worker to release pymupdf
         # internal caches — kept for parity with max_tasks_per_child pattern.
-        try:
-            doc.close()
-        except Exception:
-            pass
+        if doc is not None:
+            try:
+                doc.close()
+            except Exception:
+                # The document may already be closed; cleanup must not mask a parse failure.
+                pass
         gc.collect()
-        parse_span_ctx.__exit__(None, None, None)
 
 
 def parse_pdf_page_range(
@@ -652,6 +709,10 @@ def parse_pdf_page_range(
         filename: Original filename for metadata
         start_page: 0-indexed start page (inclusive). Clamped to valid range.
         end_page: End page (exclusive). None means parse to end of document.
+        extract_images_flag: Include embedded images from the selected pages.
+        image_max_count: Maximum distinct images returned.
+        image_max_bytes: Maximum total raw image bytes before base64 encoding.
+        image_max_pixels: Maximum pixel area per image.
 
     Returns:
         Dictionary with markdown content and metadata including:
@@ -659,27 +720,55 @@ def parse_pdf_page_range(
         - pages_parsed: Number of pages actually parsed
         - start_page: Actual start page used (after clamping)
         - end_page: Actual end page used (after clamping)
+
+    Raises:
+        Exception: Loading or selected-range conversion failed. This function
+            does not use the full-document page-by-page retry loop.
     """
-    start_time = time.time()
-    range_span_ctx = tracer.start_as_current_span(
+    with tracer.start_as_current_span(
         "parse_pdf_page_range",
         attributes={"service_name": "fast-parser", "document_name": filename},
-    )
-    range_span_ctx.__enter__()
+    ):
+        return _parse_pdf_page_range(
+            pdf_bytes,
+            filename,
+            start_page,
+            end_page,
+            extract_images_flag,
+            image_max_count,
+            image_max_bytes,
+            image_max_pixels,
+        )
+
+
+def _parse_pdf_page_range(
+    pdf_bytes: bytes,
+    filename: str,
+    start_page: int,
+    end_page: Optional[int],
+    extract_images_flag: bool,
+    image_max_count: int,
+    image_max_bytes: int,
+    image_max_pixels: int,
+) -> Dict[str, Any]:
+    """Parse inside the ``parse_pdf_page_range`` span; see that function for the contract."""
+    start_time = time.time()
+    doc = None
 
     import pymupdf
 
     # BytesIO input, single doc handle (was: tempfile + 2 opens).
-    with traced_operation(
-        "pdf.load", {"file_name": filename, "mode": "page_range", "pdf_size_bytes": len(pdf_bytes)}
-    ) as span:
-        doc = pymupdf.open(stream=pdf_bytes, filetype="pdf")
-        total_pages = len(doc)
-        if span:
-            span.set_attribute("total_pages", total_pages)
-            span.set_attribute("pdf_size_bytes", len(pdf_bytes))
-
     try:
+        with traced_operation(
+            "pdf.load",
+            {"file_name": filename, "mode": "page_range", "pdf_size_bytes": len(pdf_bytes)},
+        ) as span:
+            doc = pymupdf.open(stream=pdf_bytes, filetype="pdf")
+            total_pages = len(doc)
+            if span:
+                span.set_attribute("total_pages", total_pages)
+                span.set_attribute("pdf_size_bytes", len(pdf_bytes))
+
         # Clamp start_page to valid range [0, total_pages]
         start_page = max(0, min(start_page, total_pages))
 
@@ -715,7 +804,7 @@ def parse_pdf_page_range(
                     "end_page": end_page,
                     "processing_time_ms": processing_time_ms,
                     "parser": "pymupdf4llm",
-                    "version": "0.2.0",
+                    "version": getattr(pymupdf4llm, "__version__", "unknown"),
                 },
             }
 
@@ -789,7 +878,7 @@ def parse_pdf_page_range(
             "end_page": end_page,
             "processing_time_ms": processing_time_ms,
             "parser": "pymupdf4llm",
-            "version": "0.2.0",
+            "version": getattr(pymupdf4llm, "__version__", "unknown"),
         }
         if images_truncated:
             result_metadata["images_truncated"] = images_truncated
@@ -801,9 +890,10 @@ def parse_pdf_page_range(
         }
 
     finally:
-        try:
-            doc.close()
-        except Exception:
-            pass
+        if doc is not None:
+            try:
+                doc.close()
+            except Exception:
+                # The document may already be closed; cleanup must not mask a parse failure.
+                pass
         gc.collect()
-        range_span_ctx.__exit__(None, None, None)

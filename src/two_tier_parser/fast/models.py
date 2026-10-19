@@ -34,7 +34,7 @@ class ParseResponse(BaseModel):
     metadata: dict = Field(..., description="Parsing metadata")
     images: List[ImageData] = Field(
         default_factory=list,
-        description="Extracted images (empty when extract_images=false). OWASP ASVS V12 caps apply.",
+        description="Extracted images (empty when extract_images=false). Application image-extraction caps apply.",
     )
 
 
@@ -48,6 +48,10 @@ class HealthResponse(BaseModel):
     version: str = Field(default="1.0.0", description="Service version")
     minio_connected: bool = Field(
         default=False, description="S3-compatible object storage connectivity status"
+    )
+    storage_configured: bool = Field(
+        default=False,
+        description="Whether an object store is configured for claim-check requests",
     )
     layout_enabled: bool = Field(default=False, description="Whether pymupdf-layout GNN is active ")
 

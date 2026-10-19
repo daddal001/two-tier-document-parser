@@ -123,9 +123,10 @@ jupyter notebook parser_visualization.ipynb
 ## Environment Variables
 
 ### Fast Parser
-- `PYTHON_GIL`: Enable/disable GIL (0 = disabled for true parallelism)
-- `WORKERS`: Number of thread pool workers (default: 4)
-- `LOG_LEVEL`: Logging level (default: INFO)
+- `WORKERS`: Number of parser worker processes (default: available CPUs; the sample compose file sets 4)
+- `LOG_LEVEL`: Logging level, any case (default: INFO)
+- `OBJECT_STORE_ENDPOINT`, `OBJECT_STORE_ACCESS_KEY`, `OBJECT_STORE_SECRET_KEY`: Optional S3-compatible store for JSON claim-check requests (the `MINIO_*` names still work)
+- `PARSER_ALLOWED_BUCKETS`: Optional comma-separated allow-list of claim-check buckets
 
 ### Accurate Parser
 - `WORKERS`: Number of thread pool workers (default: 2)
