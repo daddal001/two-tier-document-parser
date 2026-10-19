@@ -2,7 +2,7 @@
 # Based on official MinerU configuration
 # Use v0.10.2 for Tesla T4 (Turing architecture, Compute Capability 7.5)
 
-FROM vllm/vllm-openai:v0.10.2
+FROM vllm/vllm-openai:v0.31.0
 
 # Install system dependencies
 RUN apt-get update && \
