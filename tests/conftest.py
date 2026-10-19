@@ -5,6 +5,37 @@ from pathlib import Path
 
 import pytest
 
+# Settings that change service behavior. A developer shell or CI job that exports any of them
+# must not change test results.
+_AMBIENT_SETTINGS = (
+    "OBJECT_STORE_ENDPOINT",
+    "OBJECT_STORE_ACCESS_KEY",
+    "OBJECT_STORE_SECRET_KEY",
+    "OBJECT_STORE_SECURE",
+    "OBJECT_STORE_REGION",
+    "OBJECT_STORE_HEALTH_TIMEOUT_SECONDS",
+    "MINIO_ENDPOINT",
+    "MINIO_ACCESS_KEY",
+    "MINIO_SECRET_KEY",
+    "MINIO_SECURE",
+    "MINIO_ROOT_USER",
+    "MINIO_ROOT_PASSWORD",
+    "MINIO_HEALTH_TIMEOUT_SECONDS",
+    "PARSER_ALLOWED_BUCKETS",
+    "SERVICE_NAME",
+    "OTEL_SERVICE_NAME",
+    "OTEL_EXPORTER_OTLP_ENDPOINT",
+    "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+    "LOG_FORMAT",
+)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_ambient_settings(monkeypatch):
+    for name in _AMBIENT_SETTINGS:
+        monkeypatch.delenv(name, raising=False)
+
+
 # Test data directory
 TEST_DATA_DIR = Path(__file__).parent / "fixtures"
 

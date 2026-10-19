@@ -505,11 +505,12 @@ docker compose version     # v2.x (new, recommended)
 
 ### Fast Parser Issues
 
-**Issue**: "PYTHON_GIL not disabled"
+**Issue**: Parsing fails or the container exits with a read-only root filesystem
 ```bash
-# Verify environment variable in container
-docker exec fast-parser env | grep PYTHON_GIL
-# Should output: PYTHON_GIL=0
+# The image runs as a non-root user and needs a writable /tmp
+docker run --read-only --tmpfs /tmp -p 8004:8004 fast-parser
+# Confirm what the interpreter reports
+curl -s http://localhost:8004/health
 ```
 
 **Issue**: Port 8004 already in use
@@ -649,7 +650,7 @@ For development with auto-reload:
 ```bash
 # Fast parser
 cd fast/
-PYTHON_GIL=0 uvicorn app:app --host 0.0.0.0 --port 8004 --reload
+uvicorn app:app --host 0.0.0.0 --port 8004 --reload
 
 # Accurate parser
 cd accurate/

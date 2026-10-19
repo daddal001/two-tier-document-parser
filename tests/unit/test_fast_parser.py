@@ -16,6 +16,7 @@ from starlette.responses import Response
 # Add the submodule's src-layout root (tests/unit -> repository root -> src).
 sys.path.insert(0, str(Path(__file__).parents[2] / "src"))
 
+from two_tier_parser.common.json_logging import configure_json_logging
 from two_tier_parser.fast import main as fast_main
 from two_tier_parser.fast.models import ParseResponse
 from two_tier_parser.fast.service import parse_pdf
@@ -249,7 +250,12 @@ def test_broken_worker_pool_is_replaced_and_reported_as_retryable(
     assert error.headers == {"Retry-After": "2"}
     assert getattr(fast_main, attribute) is replacement
     assert constructor_calls == [
-        {"max_workers": workers, "max_tasks_per_child": fast_main.MAX_TASKS}
+        {
+            "max_workers": workers,
+            "max_tasks_per_child": fast_main.MAX_TASKS,
+            "initializer": configure_json_logging,
+            "initargs": (None, "fast-parser"),
+        }
     ]
 
 

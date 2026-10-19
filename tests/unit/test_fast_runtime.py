@@ -20,6 +20,13 @@ from two_tier_parser.fast import service
 from two_tier_parser.fast.core import telemetry
 
 
+def _reload_main():
+    """Reload the app module, first releasing the pools the previous load created."""
+    fast_main.executor.shutdown(wait=False, cancel_futures=True)
+    fast_main.pages_executor.shutdown(wait=False, cancel_futures=True)
+    return importlib.reload(fast_main)
+
+
 def test_package_version_matches_pyproject():
     declared = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["version"]
     assert two_tier_parser.__version__ == declared
@@ -43,20 +50,20 @@ def test_metadata_version_is_the_installed_pymupdf4llm():
 def test_no_gil_follows_the_interpreter(monkeypatch, gil_enabled, no_gil):
     monkeypatch.setattr(sys, "_is_gil_enabled", lambda: gil_enabled, raising=False)
     try:
-        module = importlib.reload(fast_main)
+        module = _reload_main()
         assert module.NO_GIL is no_gil
     finally:
         monkeypatch.undo()
-        importlib.reload(fast_main)
+        _reload_main()
 
 
 def test_no_gil_is_false_when_the_interpreter_cannot_say(monkeypatch):
     monkeypatch.delattr(sys, "_is_gil_enabled", raising=False)
     try:
-        assert importlib.reload(fast_main).NO_GIL is False
+        assert _reload_main().NO_GIL is False
     finally:
         monkeypatch.undo()
-        importlib.reload(fast_main)
+        _reload_main()
 
 
 # --- OTLP export is opt-in -------------------------------------------------------------------
@@ -167,7 +174,7 @@ def test_queue_depth_probe_fails_open(monkeypatch):
 def test_service_starts_and_serves_empty_metrics_without_prometheus(monkeypatch):
     monkeypatch.setitem(sys.modules, "prometheus_client", None)
     try:
-        module = importlib.reload(fast_main)
+        module = _reload_main()
         assert module._PROM_OK is False
         module.PARSE_BACKPRESSURE_503.inc()
         body = asyncio.run(module.metrics())
@@ -175,4 +182,4 @@ def test_service_starts_and_serves_empty_metrics_without_prometheus(monkeypatch)
         assert body.body == b""
     finally:
         monkeypatch.undo()
-        importlib.reload(fast_main)
+        _reload_main()

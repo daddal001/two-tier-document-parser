@@ -209,3 +209,37 @@ def test_corrupt_pdf_is_generic_500(client):
     detail = response.json()["detail"]
     assert detail.startswith("Parsing failed (correlation_id=")
     assert "pdf" not in detail.lower().replace("parsing", "")
+
+
+def test_streamed_oversized_upload_is_413(client, monkeypatch, pdf_bytes):
+    monkeypatch.setattr(fast_main, "MAX_PDF_BYTES", 10)
+    monkeypatch.setattr(fast_main, "_MULTIPART_OVERHEAD_BYTES", 10)
+
+    def chunks():
+        yield b"--b\r\n"
+        yield b'Content-Disposition: form-data; name="file"; filename="a.pdf"\r\n\r\n'
+        yield pdf_bytes
+
+    response = client.post(
+        "/parse", content=chunks(), headers={"content-type": "multipart/form-data; boundary=b"}
+    )
+    assert response.status_code == 413
+    assert response.json() == {"detail": "File too large (max 100MB)"}
+
+
+def test_content_type_is_case_insensitive(client):
+    response = client.post("/parse", content=b"{}", headers={"content-type": "Application/JSON"})
+    assert response.status_code == 400  # parsed as JSON, then rejected for missing fields
+
+
+def test_claim_check_without_a_store_is_501(client):
+    response = client.post("/parse", json={"bucket": "b", "key": "x.pdf", "filename": "x.pdf"})
+    assert response.status_code == 501
+    assert "multipart" in response.json()["detail"]
+
+
+def test_disallowed_bucket_is_403(client, monkeypatch):
+    monkeypatch.setenv("PARSER_ALLOWED_BUCKETS", "allowed")
+    response = client.post("/parse", json={"bucket": "other", "key": "x.pdf", "filename": "x.pdf"})
+    assert response.status_code == 403
+    assert response.json() == {"detail": "Bucket is not permitted"}

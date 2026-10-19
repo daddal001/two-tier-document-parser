@@ -147,17 +147,32 @@ def _default_workers() -> int:
 
 WORKERS = int(os.getenv("WORKERS", str(_default_workers())))
 MAX_TASKS = int(os.getenv("WORKER_MAX_TASKS", "50"))
-executor = ProcessPoolExecutor(max_workers=WORKERS, max_tasks_per_child=MAX_TASKS)
+
+
+def _new_pool(workers: int) -> ProcessPoolExecutor:
+    """Create a parser pool whose workers log like the parent process.
+
+    Workers started with ``spawn`` or ``forkserver`` do not inherit the parent's
+    logging configuration, so each one applies the same environment-driven setup
+    when it starts. The initializer lives in a light module so a worker does not
+    import this application. Replacement pools use the same helper.
+    """
+    return ProcessPoolExecutor(
+        max_workers=workers,
+        max_tasks_per_child=MAX_TASKS,
+        initializer=configure_json_logging,
+        initargs=(None, "fast-parser"),
+    )
+
+
+executor = _new_pool(WORKERS)
 
 # dedicated pool for the latency-sensitive `/parse-pages` route.
 # Eliminates priority inversion against multi-minute `/parse` calls on the
 # shared `executor`. The established default keeps at least two page workers;
 # deployments with tighter capacity can override this explicitly.
 PAGES_WORKERS = int(os.getenv("PAGES_WORKERS", str(max(2, WORKERS // 2))))
-pages_executor = ProcessPoolExecutor(
-    max_workers=PAGES_WORKERS,
-    max_tasks_per_child=MAX_TASKS,
-)
+pages_executor = _new_pool(PAGES_WORKERS)
 _executor_reset_lock = threading.Lock()
 
 
@@ -179,10 +194,7 @@ def _recover_broken_executor(
         current = pages_executor if stage1 else executor
         if current is failed_executor:
             workers = PAGES_WORKERS if stage1 else WORKERS
-            replacement = ProcessPoolExecutor(
-                max_workers=workers,
-                max_tasks_per_child=MAX_TASKS,
-            )
+            replacement = _new_pool(workers)
             if stage1:
                 pages_executor = replacement
             else:
@@ -266,6 +278,76 @@ def _internal_error(message: str, safe_filename: str, exc: Exception) -> HTTPExc
         status_code=500,
         detail=f"Parsing failed (correlation_id={correlation_id})",
     )
+
+
+def _exceeds(declared: str, limit: int) -> bool:
+    """Return True when a ``Content-Length`` value is a number above the limit.
+
+    ``str.isdigit`` also accepts characters such as superscript digits that ``int``
+    rejects, so the value must be ASCII as well.
+    """
+    return declared.isascii() and declared.isdigit() and int(declared) > limit
+
+
+class _BodyTooLarge(HTTPException):
+    """Raised from the request stream once the body passes its limit."""
+
+    def __init__(self) -> None:
+        super().__init__(status_code=413, detail=_TOO_LARGE_DETAIL)
+
+
+# A JSON claim-check request is a few hundred bytes; this only stops a stream that never ends.
+_JSON_BODY_LIMIT_BYTES = 1024 * 1024
+
+
+class BodyLimitMiddleware:
+    """Stop oversized request bodies while they stream, before anything is spooled.
+
+    ``Content-Length`` is checked first so an honest oversized request is refused
+    without reading a byte. A chunked request, or one that understates its length,
+    is counted as it arrives and the read is aborted with 413 at the limit, so the
+    multipart parser never writes the rest of the body to temporary storage.
+    """
+
+    def __init__(self, app: Any) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        if scope["type"] != "http" or scope["method"] != "POST":
+            await self.app(scope, receive, send)
+            return
+        if scope["path"] not in {"/parse", "/parse-pages"}:
+            await self.app(scope, receive, send)
+            return
+
+        headers = {k.lower(): v for k, v in scope["headers"]}
+        multipart = b"multipart/form-data" in headers.get(b"content-type", b"").lower()
+        limit = MAX_PDF_BYTES + _MULTIPART_OVERHEAD_BYTES if multipart else _JSON_BODY_LIMIT_BYTES
+
+        declared = headers.get(b"content-length", b"").decode("latin-1")
+        if _exceeds(declared, limit):
+            await JSONResponse(status_code=413, content={"detail": _TOO_LARGE_DETAIL})(
+                scope, receive, send
+            )
+            return
+
+        received = 0
+
+        async def counting_receive() -> Any:
+            nonlocal received
+            message = await receive()
+            if message["type"] == "http.request":
+                received += len(message.get("body", b""))
+                if received > limit:
+                    raise _BodyTooLarge()
+            return message
+
+        await self.app(scope, counting_receive, send)
+
+
+# Registered before the admission middleware below, so it sits closer to the routes: the 413 raised
+# from the request stream is then converted to a response by the framework's exception handling.
+app.add_middleware(BodyLimitMiddleware)
 
 
 @app.middleware("http")
@@ -497,7 +579,7 @@ async def _read_pdf_from_request(
         (None, 0, <defaults>).
         ``image_opts`` is the image-extraction options dict.
     """
-    content_type = request.headers.get("content-type", "")
+    content_type = request.headers.get("content-type", "").lower()
 
     if content_type.startswith("application/json"):
         # Claim-check path: read from S3-compatible object storage via bucket/key reference
@@ -585,7 +667,7 @@ async def _read_pdf_from_request(
     elif "multipart/form-data" in content_type:
         # Direct upload path: no object store involved.
         declared = request.headers.get("content-length", "")
-        if declared.isdigit() and int(declared) > MAX_PDF_BYTES + _MULTIPART_OVERHEAD_BYTES:
+        if _exceeds(declared, MAX_PDF_BYTES + _MULTIPART_OVERHEAD_BYTES):
             raise HTTPException(status_code=413, detail=_TOO_LARGE_DETAIL)
         async with request.form() as form:
             file = form.get("file")

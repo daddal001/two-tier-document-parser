@@ -162,7 +162,7 @@ def read_object(bucket: str, key: str, max_bytes: Optional[int] = None) -> bytes
             data: bytes
             if max_bytes is not None:
                 declared = response.headers.get("Content-Length", "")
-                if declared.isdigit() and int(declared) > max_bytes:
+                if declared.isascii() and declared.isdigit() and int(declared) > max_bytes:
                     raise ObjectTooLarge(f"object is {declared} bytes; limit is {max_bytes}")
                 data = response.read(max_bytes + 1)
                 if len(data) > max_bytes:

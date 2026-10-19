@@ -13,6 +13,9 @@ services:
     environment:
       - WORKERS=4             # Number of parser worker processes
       - LOG_LEVEL=INFO        # Logging level, any case (DEBUG, INFO, WARNING, ERROR)
+    read_only: true           # The image runs unprivileged and needs no writable root
+    tmpfs:
+      - /tmp
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8004/health')"]
       interval: 30s

@@ -22,7 +22,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - When the wall-clock deadline stops a task-aware parse, `metadata.truncated` is
   `"deadline"` and `metadata.last_page_parsed` names the last page included. The key is
   absent on a complete parse.
-- Oversized input is rejected before it is buffered (same 413, same 100 MiB limit).
+- Oversized input is rejected before it is buffered (same 413, same 100 MiB limit). Uploads are counted as they stream, so a chunked body, or one that understates its `Content-Length`, is cut off at the limit before the rest is spooled to temporary storage. A JSON request body is capped at 1 MiB.
+- Parser worker processes apply the same JSON logging configuration as the server, including pools that replace a failed one, so worker log lines are structured and honor `LOG_LEVEL` under every multiprocessing start method.
 - A claim-check request with no object store configured returns 501.
 - Log lines are one JSON object each with `timestamp`, `level`, `logger`, `message` and
   `service_name`, plus `trace_id`/`span_id` inside a span and the request fields
@@ -61,7 +62,7 @@ Before deploying, check that:
    default `/dev/shm`.
 10. The running image matches the commit you believe it is; `pip freeze` in the image
    should be compared with the `uv.lock` of the release before switching.
-   `SERVICE_NAME`, when set, overrides the `service_name` field on every log line.
+11. `SERVICE_NAME`, when set, overrides the `service_name` field on every log line.
 
 ### Added
 - OpenTelemetry API-only instrumentation for distributed tracing (74+ span points)
