@@ -42,7 +42,7 @@ from ..common.json_logging import configure_json_logging
 from .models import HealthResponse, ParseResponse
 from .service import detect_device, parse_pdf
 
-configure_json_logging(os.getenv("LOG_LEVEL", "INFO"))
+configure_json_logging(service_name="accurate-parser")
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer("parser.accurate")

@@ -85,6 +85,7 @@ Before deploying, check that:
 - The response size reported in the "Parse complete" log line is measured on the worker
   thread, so serializing a large result no longer blocks the event loop, and the periodic
   cleanup log reports the number of tasks it covered (it used to report zero).
+- Log lines are JSON with `service_name: accurate-parser` (`LOG_LEVEL` in any case, `SERVICE_NAME` to override), uvicorn's own records included. Output printed by MinerU and its libraries (progress bars, loguru lines) is not rewritten and stays plain text.
 - The response shape is unchanged. `metadata.version` is the installed MinerU version.
 
 ### Accurate parser: additions and packaging changes

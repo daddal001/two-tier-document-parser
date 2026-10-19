@@ -7,7 +7,9 @@ COPY MinerU /opt/MinerU
 RUN pip install --no-cache-dir -e /opt/MinerU
 COPY pyproject.toml README.md LICENSE ./
 COPY src/ src/
-RUN pip install --no-cache-dir '.[accurate]'
+# No `accurate` extra: it adds PyTorch, whose default Linux wheel bundles CUDA libraries.
+# The ONNX pipeline backend selected below does not need it.
+RUN pip install --no-cache-dir '.[telemetry,telemetry-sdk]'
 COPY deploy/entrypoint-accurate.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 ENV WORKERS=2 MINERU_DEVICE_MODE=cpu MINERU_DOWNLOAD_MODELS=pipeline \

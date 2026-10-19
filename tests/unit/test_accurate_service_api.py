@@ -256,14 +256,14 @@ def test_successful_parse_keeps_the_response_shape(monkeypatch, fresh_pool):
 
 def test_response_size_is_measured_off_the_event_loop(monkeypatch, fresh_pool):
     monkeypatch.setattr(main, "parse_pdf", lambda *_: _result())
-    serializing_threads = []
-    real_dumps = main.json.dumps
+    worker_threads = []
+    real = main._parse_pdf_with_cleanup
 
-    def recording_dumps(*args, **kwargs):
-        serializing_threads.append(threading.current_thread())
-        return real_dumps(*args, **kwargs)
+    def recording(*args):
+        worker_threads.append(threading.current_thread())
+        return real(*args)
 
-    monkeypatch.setattr(main.json, "dumps", recording_dumps)
+    monkeypatch.setattr(main, "_parse_pdf_with_cleanup", recording)
 
     async def exercise():
         async with _client() as client:
@@ -271,8 +271,8 @@ def test_response_size_is_measured_off_the_event_loop(monkeypatch, fresh_pool):
 
     loop_thread = threading.current_thread()
     assert asyncio.run(exercise()).status_code == 200
-    assert serializing_threads
-    assert loop_thread not in serializing_threads
+    # The size is computed inside _parse_pdf_with_cleanup, which must not run on the loop.
+    assert worker_threads and loop_thread not in worker_threads
 
 
 def test_periodic_cleanup_logs_the_count_it_performed(monkeypatch, caplog):
