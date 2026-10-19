@@ -1,12 +1,13 @@
 """Unit tests for page-range parsing functionality."""
-from pathlib import Path
+
 import sys
+from pathlib import Path
 
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
 
+from two_tier_parser.fast.models import PageRangeMetadata, PageRangeParseResponse
 from two_tier_parser.fast.service import parse_pdf_page_range
-from two_tier_parser.fast.models import PageRangeParseResponse, PageRangeMetadata
 
 
 def test_parse_first_two_pages(sample_pdf_path):

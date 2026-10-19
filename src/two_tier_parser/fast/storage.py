@@ -2,6 +2,7 @@
 
 Reads PDF files directly from S3-compatible object storage instead of receiving bytes via HTTP.
 """
+
 import logging
 import os
 
@@ -19,6 +20,7 @@ def get_minio_client():
     global _minio_client
     if _minio_client is None:
         from minio import Minio
+
         endpoint = os.getenv("MINIO_ENDPOINT", "minio:9000")
         access_key = os.getenv("MINIO_ACCESS_KEY") or os.getenv("MINIO_ROOT_USER", "")
         secret_key = os.getenv("MINIO_SECRET_KEY") or os.getenv("MINIO_ROOT_PASSWORD", "")
@@ -33,11 +35,14 @@ def get_minio_client():
 
 def read_file_from_minio(bucket: str, key: str) -> bytes:
     """Read file bytes from S3-compatible object storage with OTel span."""
-    with tracer.start_as_current_span("minio.get_object", attributes={
-        "service_name": "fast-parser",
-        "minio.bucket": bucket,
-        "minio.key": key,
-    }) as span:
+    with tracer.start_as_current_span(
+        "minio.get_object",
+        attributes={
+            "service_name": "fast-parser",
+            "minio.bucket": bucket,
+            "minio.key": key,
+        },
+    ) as span:
         client = get_minio_client()
         response = client.get_object(bucket, key)
         try:
@@ -61,9 +66,7 @@ def check_minio_connectivity(timeout_seconds: float = 1.0) -> bool:
 
     endpoint = os.getenv("MINIO_ENDPOINT", "minio:9000")
     access_key = os.getenv("MINIO_ACCESS_KEY") or os.getenv("MINIO_ROOT_USER", "")
-    secret_key = os.getenv("MINIO_SECRET_KEY") or os.getenv(
-        "MINIO_ROOT_PASSWORD", ""
-    )
+    secret_key = os.getenv("MINIO_SECRET_KEY") or os.getenv("MINIO_ROOT_PASSWORD", "")
     secure = os.getenv("MINIO_SECURE", "false").lower() == "true"
     http_client = PoolManager(
         timeout=Timeout(connect=timeout_seconds, read=timeout_seconds),

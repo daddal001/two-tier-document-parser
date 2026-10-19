@@ -6,6 +6,7 @@ This package provides optional observability features:
 
 The API-only pattern ensures zero overhead for users without tracing SDK installed.
 """
-from .telemetry import setup_telemetry, get_tracer, traced_operation, OTEL_AVAILABLE
+
+from .telemetry import OTEL_AVAILABLE, get_tracer, setup_telemetry, traced_operation
 
 __all__ = ["setup_telemetry", "get_tracer", "traced_operation", "OTEL_AVAILABLE"]

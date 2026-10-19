@@ -1,5 +1,6 @@
-from pydantic_settings import BaseSettings
 from pydantic import Field
+from pydantic_settings import BaseSettings
+
 
 class Settings(BaseSettings):
     # Fast Parser
@@ -12,7 +13,7 @@ class Settings(BaseSettings):
     ACCURATE_PARSER_HOST: str = Field("0.0.0.0", env="ACCURATE_PARSER_HOST")
     ACCURATE_PARSER_PORT: int = Field(8005, env="ACCURATE_PARSER_PORT")
     UVICORN_TIMEOUT_KEEP_ALIVE: int = Field(600, env="UVICORN_TIMEOUT_KEEP_ALIVE")
-    
+
     # Logging
     LOG_LEVEL: str = Field("INFO", env="LOG_LEVEL")
 
@@ -20,5 +21,5 @@ class Settings(BaseSettings):
         env_file = ".env"
         env_file_encoding = "utf-8"
 
-settings = Settings()
 
+settings = Settings()

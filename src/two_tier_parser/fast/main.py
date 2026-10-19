@@ -9,6 +9,7 @@ Observability:
 - Zero overhead for users who don't need tracing
 - prometheus_client metrics exposed at /metrics (gauge + histogram per )
 """
+
 import asyncio
 import json
 import logging
@@ -64,15 +65,16 @@ except ImportError:  # pragma: no cover - exercised only on stripped builds
     def generate_latest(_registry=None):  # type: ignore[no-redef]
         return b""
 
-from .models import ParseResponse, HealthResponse, PageRangeParseResponse
+
+from .models import HealthResponse, PageRangeParseResponse, ParseResponse
 from .service import parse_pdf, parse_pdf_page_range
-from .storage import read_file_from_minio, check_minio_connectivity
+from .storage import check_minio_connectivity, read_file_from_minio
 
 # Configure structured logging (applications can override)
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO"),
     format='{"timestamp": "%(asctime)s", "level": "%(levelname)s", "logger": "%(name)s", "message": "%(message)s"}',
-    datefmt="%Y-%m-%dT%H:%M:%SZ"
+    datefmt="%Y-%m-%dT%H:%M:%SZ",
 )
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer("parser.fast")
@@ -81,24 +83,26 @@ tracer = trace.get_tracer("parser.fast")
 app = FastAPI(
     title="Fast Parser Service",
     description="Ultra-fast PDF parsing using PyMuPDF4LLM",
-    version="1.0.0"
+    version="1.0.0",
 )
 
 # Optional OpenTelemetry instrumentation (API-only pattern)
 # Zero overhead if SDK not installed - API calls are no-ops
 try:
-    from .core.telemetry import setup_telemetry, OTEL_AVAILABLE
+    from .core.telemetry import OTEL_AVAILABLE, setup_telemetry
+
     if OTEL_AVAILABLE:
         setup_telemetry(app)
         logger.info(
             "OpenTelemetry instrumentation enabled",
-            extra={"service_name": "fast-parser", "component": "telemetry"}
+            extra={"service_name": "fast-parser", "component": "telemetry"},
         )
 except ImportError:
     logger.debug(
         "Telemetry core not available, running without tracing",
-        extra={"service_name": "fast-parser", "component": "telemetry"}
+        extra={"service_name": "fast-parser", "component": "telemetry"},
     )
+
 
 # ProcessPoolExecutor for concurrent parsing (PyMuPDF doesn't support threading)
 # See: https://pymupdf.readthedocs.io/en/latest/recipes-multiprocessing.html
@@ -165,6 +169,7 @@ def _recover_broken_executor(
         headers={"Retry-After": "2"},
     )
 
+
 # backpressure threshold: 503 when queue depth > BACKPRESSURE_FACTOR × workers.
 PAGES_BACKPRESSURE_FACTOR = int(os.getenv("PAGES_BACKPRESSURE_FACTOR", "2"))
 
@@ -181,9 +186,7 @@ PARSE_BACKPRESSURE_FACTOR = int(os.getenv("PARSE_BACKPRESSURE_FACTOR", "2"))
 # from each passing a stale queue-depth check and buffering unbounded PDFs.
 # Default to the configured process slots for standalone deployments. Callers
 # can set a different positive bound for their memory and latency requirements.
-MAX_INFLIGHT_DOCUMENTS = int(
-    os.getenv("MAX_INFLIGHT_DOCUMENTS", str(WORKERS + PAGES_WORKERS))
-)
+MAX_INFLIGHT_DOCUMENTS = int(os.getenv("MAX_INFLIGHT_DOCUMENTS", str(WORKERS + PAGES_WORKERS)))
 MINIO_HEALTH_TIMEOUT_SECONDS = float(os.getenv("MINIO_HEALTH_TIMEOUT_SECONDS", "1.5"))
 if WORKERS < 1 or PAGES_WORKERS < 1 or MAX_TASKS < 1 or MAX_INFLIGHT_DOCUMENTS < 1:
     raise ValueError(
@@ -228,6 +231,7 @@ async def bound_parser_inflight_documents(request: Request, call_next):
     finally:
         async with _inflight_lock:
             _inflight_documents -= 1
+
 
 # Prometheus metrics for . Available to any Prometheus-compatible monitoring system.
 if _PROM_OK:
@@ -334,9 +338,7 @@ async def metrics() -> Response:
 @app.get("/health", response_model=HealthResponse)
 async def health() -> HealthResponse:
     """Health check endpoint with worker and S3-compatible object storage status."""
-    with tracer.start_as_current_span(
-        "health", attributes={"service_name": "fast-parser"}
-    ):
+    with tracer.start_as_current_span("health", attributes={"service_name": "fast-parser"}):
         try:
             minio_ok = await asyncio.wait_for(
                 asyncio.to_thread(check_minio_connectivity),
@@ -370,7 +372,7 @@ def _sanitize_filename(filename: str) -> str:
     # Extract basename to prevent path traversal
     safe_name = os.path.basename(filename)
     safe_name = safe_name.replace("/", "_").replace("\\", "_")
-    if not safe_name.lower().endswith('.pdf'):
+    if not safe_name.lower().endswith(".pdf"):
         safe_name = "document.pdf"
     return safe_name
 
@@ -480,7 +482,9 @@ async def _read_pdf_from_request(
                     "error_message": str(e),
                 },
             )
-            raise HTTPException(status_code=502, detail=f"Failed to read file from storage: {type(e).__name__}")
+            raise HTTPException(
+                status_code=502, detail=f"Failed to read file from storage: {type(e).__name__}"
+            )
 
         return pdf_bytes, safe_filename, "claim-check", task_id, start_page, image_opts
 
@@ -495,7 +499,10 @@ async def _read_pdf_from_request(
             raise HTTPException(status_code=400, detail="Only PDF files are supported")
 
         safe_filename = _sanitize_filename(file.filename)
-        logger.info("Multipart parse request", extra={"service_name": "fast-parser", "document_name": safe_filename})
+        logger.info(
+            "Multipart parse request",
+            extra={"service_name": "fast-parser", "document_name": safe_filename},
+        )
 
         try:
             pdf_bytes = await file.read()
@@ -534,7 +541,9 @@ async def parse(request: Request) -> ParseResponse:
         ParseResponse with markdown content and metadata
     """
     request_start = time.perf_counter()
-    parse_span_ctx = tracer.start_as_current_span("parse", attributes={"service_name": "fast-parser", "endpoint": "/parse"})
+    parse_span_ctx = tracer.start_as_current_span(
+        "parse", attributes={"service_name": "fast-parser", "endpoint": "/parse"}
+    )
     parse_span_ctx.__enter__()
 
     try:
@@ -566,7 +575,9 @@ async def parse(request: Request) -> ParseResponse:
                 detail="parse_pool_saturated",
             )
 
-        pdf_bytes, safe_filename, parse_source, task_id, start_page, image_opts = await _read_pdf_from_request(request, stage1=False)
+        pdf_bytes, safe_filename, parse_source, task_id, start_page, image_opts = (
+            await _read_pdf_from_request(request, stage1=False)
+        )
     except HTTPException:
         parse_span_ctx.__exit__(None, None, None)
         raise
@@ -580,18 +591,39 @@ async def parse(request: Request) -> ParseResponse:
         span.set_attribute("parse.start_page", start_page)
 
     file_size = len(pdf_bytes)
-    logger.debug("File read complete", extra={"service_name": "fast-parser", "document_name": safe_filename, "size_bytes": file_size})
+    logger.debug(
+        "File read complete",
+        extra={
+            "service_name": "fast-parser",
+            "document_name": safe_filename,
+            "size_bytes": file_size,
+        },
+    )
 
     # Validate file size (100MB limit)
     if file_size > 100 * 1024 * 1024:
-        logger.warning("File too large", extra={"service_name": "fast-parser", "document_name": safe_filename, "size_mb": file_size / (1024*1024)})
+        logger.warning(
+            "File too large",
+            extra={
+                "service_name": "fast-parser",
+                "document_name": safe_filename,
+                "size_mb": file_size / (1024 * 1024),
+            },
+        )
         parse_span_ctx.__exit__(None, None, None)
         raise HTTPException(status_code=413, detail="File too large (max 100MB)")
 
     # Parse PDF in process pool
     try:
         loop = asyncio.get_event_loop()
-        logger.debug("Submitting to process pool", extra={"service_name": "fast-parser", "document_name": safe_filename, "workers": WORKERS})
+        logger.debug(
+            "Submitting to process pool",
+            extra={
+                "service_name": "fast-parser",
+                "document_name": safe_filename,
+                "workers": WORKERS,
+            },
+        )
 
         active_executor = executor
         result = await loop.run_in_executor(
@@ -610,18 +642,24 @@ async def parse(request: Request) -> ParseResponse:
 
         # Check if result is None (shouldn't happen with fast parser, but safety check)
         if result is None:
-            logger.error("Parsing returned None", extra={"service_name": "fast-parser", "document_name": safe_filename})
+            logger.error(
+                "Parsing returned None",
+                extra={"service_name": "fast-parser", "document_name": safe_filename},
+            )
             raise HTTPException(status_code=500, detail="Parsing failed: No result returned")
 
         # Check if result contains an error
         if "error" in result:
             logger.error(
                 "Parsing failed",
-                extra={"service_name": "fast-parser", "document_name": safe_filename, "error_message": result.get('error', 'Unknown error')}
+                extra={
+                    "service_name": "fast-parser",
+                    "document_name": safe_filename,
+                    "error_message": result.get("error", "Unknown error"),
+                },
             )
             raise HTTPException(
-                status_code=500,
-                detail=f"Parsing failed: {result.get('error', 'Unknown error')}"
+                status_code=500, detail=f"Parsing failed: {result.get('error', 'Unknown error')}"
             )
 
         # translate preemption into HTTP 409. The caller
@@ -665,8 +703,12 @@ async def parse(request: Request) -> ParseResponse:
                 "parse_time_ms": result["metadata"]["processing_time_ms"],
                 "total_time_ms": total_time_ms,
                 "size_bytes": file_size,
-                "throughput_pages_per_sec": result["metadata"]["pages"] / (result["metadata"]["processing_time_ms"] / 1000) if result["metadata"]["processing_time_ms"] > 0 else 0,
-            }
+                "throughput_pages_per_sec": (
+                    result["metadata"]["pages"] / (result["metadata"]["processing_time_ms"] / 1000)
+                    if result["metadata"]["processing_time_ms"] > 0
+                    else 0
+                ),
+            },
         )
 
         parse_span_ctx.__exit__(None, None, None)
@@ -691,7 +733,12 @@ async def parse(request: Request) -> ParseResponse:
         logger.error(
             "Parsing failed",
             exc_info=True,
-            extra={"service_name": "fast-parser", "document_name": safe_filename, "error_type": type(e).__name__, "error_message": str(e)}
+            extra={
+                "service_name": "fast-parser",
+                "document_name": safe_filename,
+                "error_type": type(e).__name__,
+                "error_message": str(e),
+            },
         )
         parse_span_ctx.__exit__(type(e), e, e.__traceback__)
         raise HTTPException(status_code=500, detail=f"Parsing failed: {str(e)}")
@@ -701,7 +748,9 @@ async def parse(request: Request) -> ParseResponse:
 async def parse_pages(
     request: Request,
     start_page: int = Query(0, ge=0, description="Start page (0-indexed, inclusive)"),
-    end_page: Optional[int] = Query(None, ge=1, description="End page (exclusive). None = all remaining pages"),
+    end_page: Optional[int] = Query(
+        None, ge=1, description="End page (exclusive). None = all remaining pages"
+    ),
 ) -> PageRangeParseResponse:
     """Parse specific page range of a PDF document.
 
@@ -717,7 +766,9 @@ async def parse_pages(
     """
     request_start = time.perf_counter()
 
-    with tracer.start_as_current_span("parse_pages", attributes={"service_name": "fast-parser", "endpoint": "/parse-pages"}) as span:
+    with tracer.start_as_current_span(
+        "parse_pages", attributes={"service_name": "fast-parser", "endpoint": "/parse-pages"}
+    ) as span:
         # backpressure: refuse fast and let the caller apply its retry policy. Threshold is sampled
         # *before* PDF read so we don't waste S3-compatible object storage bandwidth on a request
         # we're about to reject.
@@ -745,7 +796,9 @@ async def parse_pages(
             )
 
         try:
-            pdf_bytes, safe_filename, parse_source, _task_id, _start_page, image_opts = await _read_pdf_from_request(request, stage1=True)
+            pdf_bytes, safe_filename, parse_source, _task_id, _start_page, image_opts = (
+                await _read_pdf_from_request(request, stage1=True)
+            )
         except HTTPException:
             raise
 
@@ -811,7 +864,7 @@ async def parse_pages(
                     "parse_time_ms": result["metadata"]["processing_time_ms"],
                     "total_time_ms": total_time_ms,
                     "pages_executor_queue_depth_at_submit": queue_depth,
-                }
+                },
             )
 
             return PageRangeParseResponse(**result)
@@ -831,11 +884,17 @@ async def parse_pages(
             logger.error(
                 "Page range parsing failed",
                 exc_info=True,
-                extra={"service_name": "fast-parser", "document_name": safe_filename, "error_type": type(e).__name__, "error_message": str(e)}
+                extra={
+                    "service_name": "fast-parser",
+                    "document_name": safe_filename,
+                    "error_type": type(e).__name__,
+                    "error_message": str(e),
+                },
             )
             raise HTTPException(status_code=500, detail=f"Parsing failed: {str(e)}")
 
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(app, host="0.0.0.0", port=8004)

@@ -1,0 +1,112 @@
+# Pre-commit hooks: the same gate runs locally and in CI (`pre-commit run --all-files`).
+# Install: make hooks   (installs the pre-commit and commit-msg hooks)
+# Python tools run from the project environment (`make install`) so versions match uv.lock.
+# Docs: https://pre-commit.com/
+
+default_install_hook_types: [pre-commit, commit-msg]
+default_stages: [pre-commit]
+exclude: ^(MinerU/|docs/standards/)
+
+repos:
+  # ── Hygiene ────────────────────────────────────────────────────
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: 3e8a8703264a2f4a69428a0aa4dcb512790b2c8c  # frozen: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+        args: ['--unsafe']
+      - id: check-json
+      - id: check-toml
+      - id: check-ast
+      - id: check-merge-conflict
+      - id: check-case-conflict
+      - id: check-shebang-scripts-are-executable
+      - id: debug-statements
+      - id: detect-private-key
+      - id: check-added-large-files
+        args: ['--maxkb=1000']
+        # Recorded notebook outputs and the sample PDF fixture are intentionally large.
+        exclude: ^(examples/notebooks/parser_visualization\.ipynb|examples/data/sample\.pdf)$
+
+  # ── Secrets and internal references ────────────────────────────
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: 2ca41cc1372d1e939a6a879f18cdc19fc1cac1ce  # frozen: v8.30.0
+    hooks:
+      - id: gitleaks
+  - repo: local
+    hooks:
+      # Whole-history scan for CI (the hook above only sees staged changes).
+      # Run with: pre-commit run gitleaks-history --hook-stage manual --all-files
+      - id: gitleaks-history
+        name: gitleaks (full history)
+        entry: gitleaks git --redact --no-banner
+        language: golang
+        additional_dependencies: [github.com/zricethezav/gitleaks/v8@v8.30.0]
+        pass_filenames: false
+        always_run: true
+        stages: [manual]
+      # Private deny-list kept outside the repository (see scripts/check_internal_terms.py).
+      - id: internal-terms
+        name: Internal reference guard (staged changes)
+        entry: python scripts/check_internal_terms.py
+        language: system
+        pass_filenames: false
+        always_run: true
+      - id: internal-terms-message
+        name: Internal reference guard (commit message)
+        entry: python scripts/check_internal_terms.py
+        language: system
+        stages: [commit-msg]
+
+  # ── Python quality gate (project environment) ──────────────────
+  - repo: local
+    hooks:
+      - id: black
+        name: black
+        entry: black --check --quiet
+        language: system
+        types: [python]
+      - id: isort
+        name: isort
+        entry: isort --check-only --profile black --quiet
+        language: system
+        types: [python]
+      - id: flake8
+        name: flake8
+        entry: flake8
+        language: system
+        types: [python]
+      - id: mypy
+        name: mypy
+        entry: mypy src/
+        language: system
+        pass_filenames: false
+        files: ^(src/.*\.py|pyproject\.toml)$
+      - id: bandit
+        name: bandit (medium and above)
+        entry: bandit -c pyproject.toml -ll -q -r src/
+        language: system
+        pass_filenames: false
+        files: ^(src/.*\.py|pyproject\.toml)$
+      - id: pytest
+        name: tests (no live services, no models)
+        entry: pytest tests -q -m "not models and not integration"
+        language: system
+        pass_filenames: false
+        files: ^(src/.*\.py|tests/.*\.py|scripts/.*\.py|pyproject\.toml|uv\.lock)$
+
+  # ── Workflows, Dockerfiles and shell ───────────────────────────
+  - repo: https://github.com/rhysd/actionlint
+    rev: 914e7df21a07ef503a81201c76d2b11c789d3fca  # frozen: v1.7.12
+    hooks:
+      - id: actionlint
+  - repo: https://github.com/AleksaC/hadolint-py
+    rev: 6e7504451511eaeb62a3e7f14d63b0296cbf86eb  # frozen: v2.15.1
+    hooks:
+      - id: hadolint
+        files: ^deploy/Dockerfile
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: a6564f5d57444e123433a5c9af733e3975c77229  # frozen: v0.11.0.1-1
+    hooks:
+      - id: shellcheck

@@ -324,7 +324,7 @@ limits:
 - ❌ Error: "too many resources requested for launch"
   - ✅ Solution: Using transformers backend (already configured)
   - Don't use vLLM backend on T4
-  
+
 **Ampere+ Issues:**
 - ⚠️ Slow processing despite good GPU
   - ✅ Increase `MINERU_VIRTUAL_VRAM_SIZE` to match GPU VRAM

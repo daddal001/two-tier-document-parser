@@ -1,0 +1,71 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    # Runs the same hooks as `pre-commit` locally, plus a whole-history secret scan.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11', '3.12']
+    env:
+      OTEL_SDK_DISABLED: 'true'
+      WORKERS: '2'
+      PAGES_WORKERS: '2'
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0  # the history scan below needs every commit
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - run: uv sync --frozen --extra fast --extra dev --extra cancellation
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/pre-commit
+          key: pre-commit-${{ matrix.python }}-${{ hashFiles('.pre-commit-config.yaml') }}
+      - name: Run all hooks
+        run: uv run --frozen --no-sync pre-commit run --all-files --show-diff-on-failure
+      - name: Scan the full git history for secrets
+        run: uv run --frozen --no-sync pre-commit run gitleaks-history --hook-stage manual --all-files
+      - name: Build the package
+        run: uv run --frozen --no-sync python -m build
+      - name: Check the wheel outside the source tree
+        run: |
+          python -m venv "$RUNNER_TEMP/wheel-test"
+          "$RUNNER_TEMP/wheel-test/bin/pip" install dist/*.whl
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/wheel-test/bin/two-tier-parser-demo" --help
+          "$RUNNER_TEMP/wheel-test/bin/python" - <<PY
+          import importlib.metadata
+          import tomllib
+
+          import two_tier_parser
+
+          with open("$GITHUB_WORKSPACE/pyproject.toml", "rb") as f:
+              declared = tomllib.load(f)["project"]["version"]
+          installed = importlib.metadata.version("two_tier_document_parser")
+          assert declared == installed == two_tier_parser.__version__, (
+              declared,
+              installed,
+              two_tier_parser.__version__,
+          )
+          PY

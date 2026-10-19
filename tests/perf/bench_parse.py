@@ -17,6 +17,7 @@ The ship gate (enforced at merge, not here) requires:
 We deliberately avoid heavy pytest-benchmark framework; plain time.perf_counter
 keeps the harness hermetic and self-describing.
 """
+
 from __future__ import annotations
 
 import concurrent.futures
@@ -31,7 +32,9 @@ from pathlib import Path
 import pytest
 
 HERE = Path(__file__).parent
-RESULTS_DIR = HERE.parent / "perf_results" if (HERE.parent / "perf_results").exists() else HERE / "results"
+RESULTS_DIR = (
+    HERE.parent / "perf_results" if (HERE.parent / "perf_results").exists() else HERE / "results"
+)
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
 SRC_ROOT = HERE.parent.parent / "src"
@@ -67,8 +70,7 @@ def _make_synthetic_pdf(num_pages: int) -> bytes:
             (72, 72),
             (
                 f"Benchmark page {page_idx + 1} of {num_pages}. "
-                "Lorem ipsum dolor sit amet consectetur adipiscing elit. "
-                * 20
+                "Lorem ipsum dolor sit amet consectetur adipiscing elit. " * 20
             ),
         )
         tw.write_text(page)
@@ -134,6 +136,7 @@ def _snapshot_name() -> str:
 def _has_layout_available() -> bool:
     try:
         import pymupdf.layout  # noqa: F401
+
         return True
     except Exception:
         return False

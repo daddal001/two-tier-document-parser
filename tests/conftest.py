@@ -1,7 +1,9 @@
 """Pytest configuration and fixtures."""
-import pytest
+
 import tempfile
 from pathlib import Path
+
+import pytest
 
 # Test data directory
 TEST_DATA_DIR = Path(__file__).parent / "fixtures"
@@ -16,7 +18,7 @@ def sample_pdf_path():
     # Use absolute path relative to project root
     pdf_path = PROJECT_ROOT / "examples" / "data" / "sample.pdf"
     if not pdf_path.exists():
-        pytest.skip(f"Sample PDF not found at {pdf_path}")
+        pytest.fail(f"Required sample PDF not found at {pdf_path}")
     return pdf_path
 
 
@@ -29,27 +31,27 @@ def single_page_pdf_path(sample_pdf_path):
         try:
             import PyPDF2 as pypdf
         except ImportError:
-            pytest.skip("pypdf or PyPDF2 required for single-page PDF creation")
-    
+            pytest.fail("Install the dev extra: pypdf is required for single-page PDF creation")
+
     # Create temporary file for single-page PDF
-    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.pdf')
+    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
     temp_path = Path(temp_file.name)
     temp_file.close()
-    
+
     try:
         # Read original PDF and extract first page
         reader = pypdf.PdfReader(sample_pdf_path)
         if len(reader.pages) == 0:
-            pytest.skip("Sample PDF has no pages")
-        
+            pytest.fail("Required sample PDF has no pages")
+
         # Create new PDF with only first page
         writer = pypdf.PdfWriter()
         writer.add_page(reader.pages[0])
-        
+
         # Write to temporary file
-        with open(temp_path, 'wb') as f:
+        with open(temp_path, "wb") as f:
             writer.write(f)
-        
+
         yield temp_path
     finally:
         # Clean up temporary file
@@ -68,3 +70,19 @@ def accurate_parser_url():
     """Accurate parser service URL."""
     return "http://localhost:8005"
 
+
+def pytest_addoption(parser):
+    """Register explicit opt-ins for benchmarks, model inference, and live services."""
+    parser.addoption("--run-bench", action="store_true", help="Run local performance harness")
+    parser.addoption("--run-models", action="store_true", help="Run required real MinerU tests")
+    parser.addoption(
+        "--run-integration", action="store_true", help="Run tests against live services"
+    )
+
+
+def pytest_collection_modifyitems(config, items):
+    """Skip model and live-service tests unless the corresponding opt-in is set."""
+    for item in items:
+        for marker, option in [("models", "--run-models"), ("integration", "--run-integration")]:
+            if marker in item.keywords and not config.getoption(option):
+                item.add_marker(pytest.mark.skip(reason=f"Explicit opt-in required: {option}"))

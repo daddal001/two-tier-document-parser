@@ -10,6 +10,7 @@ Per OpenTelemetry docs:
 
 See: https://opentelemetry.io/docs/concepts/instrumentation/libraries/
 """
+
 import logging
 from contextlib import contextmanager
 from typing import Any, Dict, Generator, Optional
@@ -20,12 +21,16 @@ logger = logging.getLogger(__name__)
 try:
     from opentelemetry import trace
     from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+
     OTEL_AVAILABLE = True
     tracer = trace.get_tracer("two_tier_parser.fast", "1.0.0")
 except ImportError:
     OTEL_AVAILABLE = False
     tracer = None
-    logger.debug("OpenTelemetry not installed - telemetry disabled", extra={"service_name": "two-tier-parser"})
+    logger.debug(
+        "OpenTelemetry not installed - telemetry disabled",
+        extra={"service_name": "two-tier-parser"},
+    )
 
 
 def setup_telemetry(app) -> bool:
@@ -47,12 +52,13 @@ def setup_telemetry(app) -> bool:
     # If the SDK is installed, auto-configure TracerProvider from env vars
     # (OTEL_EXPORTER_OTLP_ENDPOINT, OTEL_SERVICE_NAME, etc.)
     try:
+        import os
+
+        from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+        from opentelemetry.sdk.resources import SERVICE_NAME, Resource
         from opentelemetry.sdk.trace import TracerProvider
         from opentelemetry.sdk.trace.export import BatchSpanProcessor
-        from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
-        from opentelemetry.sdk.resources import Resource, SERVICE_NAME
 
-        import os
         service_name = os.environ.get("OTEL_SERVICE_NAME", "fast-parser")
         resource = Resource.create({SERVICE_NAME: service_name})
         provider = TracerProvider(resource=resource)
@@ -60,18 +66,18 @@ def setup_telemetry(app) -> bool:
         trace.set_tracer_provider(provider)
         logger.info(
             "OpenTelemetry SDK configured with OTLP exporter",
-            extra={"service_name": "fast-parser", "component": "telemetry"}
+            extra={"service_name": "fast-parser", "component": "telemetry"},
         )
     except ImportError:
         logger.debug(
             "OpenTelemetry SDK not installed - using API-only (no-op) mode",
-            extra={"service_name": "fast-parser", "component": "telemetry"}
+            extra={"service_name": "fast-parser", "component": "telemetry"},
         )
 
     FastAPIInstrumentor.instrument_app(app)
     logger.info(
         "OpenTelemetry instrumentation enabled",
-        extra={"service_name": "fast-parser", "component": "telemetry"}
+        extra={"service_name": "fast-parser", "component": "telemetry"},
     )
     return True
 
@@ -83,8 +89,7 @@ def get_tracer():
 
 @contextmanager
 def traced_operation(
-    name: str,
-    attributes: Optional[Dict[str, Any]] = None
+    name: str, attributes: Optional[Dict[str, Any]] = None
 ) -> Generator[Any, None, None]:
     """Context manager for tracing operations.
 
@@ -110,7 +115,7 @@ def traced_operation(
                     span.set_attribute(k, v)
             logger.debug(
                 "Starting operation",
-                extra={"service_name": "fast-parser", "operation": name, **(attributes or {})}
+                extra={"service_name": "fast-parser", "operation": name, **(attributes or {})},
             )
             try:
                 yield span
@@ -121,17 +126,21 @@ def traced_operation(
                 logger.error(
                     "Operation failed",
                     exc_info=True,
-                    extra={"service_name": "fast-parser", "operation": name, "error_type": type(e).__name__, "error_message": str(e)}
+                    extra={
+                        "service_name": "fast-parser",
+                        "operation": name,
+                        "error_type": type(e).__name__,
+                        "error_message": str(e),
+                    },
                 )
                 raise
             logger.debug(
-                "Completed operation",
-                extra={"service_name": "fast-parser", "operation": name}
+                "Completed operation", extra={"service_name": "fast-parser", "operation": name}
             )
     else:
         logger.debug(
             "Starting operation",
-            extra={"service_name": "fast-parser", "operation": name, **(attributes or {})}
+            extra={"service_name": "fast-parser", "operation": name, **(attributes or {})},
         )
         try:
             yield None
@@ -139,10 +148,14 @@ def traced_operation(
             logger.error(
                 "Operation failed",
                 exc_info=True,
-                extra={"service_name": "fast-parser", "operation": name, "error_type": type(e).__name__, "error_message": str(e)}
+                extra={
+                    "service_name": "fast-parser",
+                    "operation": name,
+                    "error_type": type(e).__name__,
+                    "error_message": str(e),
+                },
             )
             raise
         logger.debug(
-            "Completed operation",
-            extra={"service_name": "fast-parser", "operation": name}
+            "Completed operation", extra={"service_name": "fast-parser", "operation": name}
         )
