@@ -4,7 +4,7 @@
 
 # Stage 1: turn uv.lock into pip constraints so the image installs exactly the locked
 # versions. A dependency bump merged into uv.lock reaches the next build automatically.
-FROM python:3.12-slim AS constraints
+FROM python:3.15-slim AS constraints
 RUN pip install --no-cache-dir uv==0.13.0
 WORKDIR /build
 COPY pyproject.toml uv.lock ./
@@ -13,7 +13,7 @@ RUN uv export --frozen --no-hashes --no-emit-project \
         -o constraints.txt
 
 # Stage 2: runtime image
-FROM python:3.12-slim
+FROM python:3.15-slim
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
