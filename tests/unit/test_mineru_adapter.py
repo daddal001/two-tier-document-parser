@@ -7,6 +7,8 @@ import pytest
 
 from two_tier_parser.accurate import mineru_adapter as adapter
 
+REAL_PAGE_SIZES = adapter._page_sizes  # the fixture below replaces it for every other test
+
 
 @pytest.fixture(autouse=True)
 def _fake_mineru(monkeypatch):
@@ -32,6 +34,8 @@ def _fake_mineru(monkeypatch):
         "mineru.render": render_module,
     }.items():
         monkeypatch.setitem(sys.modules, name, module)
+    # Reading page sizes needs pypdfium2, which arrives with MinerU; tests set their own sizes.
+    monkeypatch.setattr(adapter, "_page_sizes", lambda _: [])
 
 
 @pytest.mark.parametrize(("use_vlm", "effort"), [(False, "medium"), (True, "high")])
@@ -103,6 +107,7 @@ def test_normalizes_multimodal_content_list_fields(monkeypatch):
         ],
     )
     monkeypatch.setattr(render_module, "render_markdown", lambda _: "document")
+    monkeypatch.setattr(adapter, "_page_sizes", lambda _: [(1000.0, 1000.0), (1000.0, 1000.0)])
 
     result = adapter.analyze(b"pdf bytes", use_vlm=False)
 
@@ -111,7 +116,7 @@ def test_normalizes_multimodal_content_list_fields(monkeypatch):
             "image_id": "page_0_img_0",
             "image_base64": "aGVsbG8=",
             "page": 0,
-            "bbox": [1, 2, 3, 4],
+            "bbox": [1.0, 2.0, 3.0, 4.0],
         }
     ]
     assert result["tables"][0]["markdown"] == "<table></table>"
@@ -127,3 +132,120 @@ def test_image_payload_walker_collects_only_image_body_blocks():
         ],
     }
     assert list(adapter._image_payloads(value)) == ["aGVsbG8="]
+
+
+def _analyze_items(monkeypatch, items, payloads=(), sizes=((600.0, 800.0),)):
+    """Run the adapter over content-list ``items`` with the given page sizes (points)."""
+    import mineru.backend.analyze as analyze_module
+    import mineru.render as render_module
+
+    blocks = [{"type": "image_body", "image_base64": payload} for payload in payloads]
+    middle = type(
+        "Middle",
+        (),
+        {"pages": list(sizes), "model_dump": lambda self: {"pages": [{"blocks": blocks}]}},
+    )()
+    monkeypatch.setattr(analyze_module, "doc_analyze", lambda **kwargs: (middle, object()))
+    monkeypatch.setattr(render_module, "render_content_list", lambda _: items)
+    monkeypatch.setattr(render_module, "render_markdown", lambda _: "document")
+    monkeypatch.setattr(adapter, "_page_sizes", lambda _: list(sizes))
+    return adapter.analyze(b"pdf bytes", use_vlm=False)
+
+
+@pytest.mark.parametrize("key", ["img_path", "content"])
+def test_an_image_data_uri_is_returned_as_raw_base64(monkeypatch, key):
+    result = _analyze_items(
+        monkeypatch, [{"type": "image", "page_idx": 0, key: "data:image/jpeg;base64,aGVsbG8="}]
+    )
+
+    assert result["images"][0]["image_base64"] == "aGVsbG8="  # the contract is raw base64 bytes
+
+
+def test_a_data_uri_from_the_payload_fallback_is_also_stripped(monkeypatch):
+    result = _analyze_items(
+        monkeypatch,
+        [{"type": "image", "page_idx": 0}],
+        payloads=["data:image/png;base64,d29ybGQ="],
+    )
+
+    assert result["images"][0]["image_base64"] == "d29ybGQ="
+
+
+def test_the_image_source_in_the_item_wins_over_the_ordered_payload_list(monkeypatch):
+    result = _analyze_items(
+        monkeypatch,
+        [
+            {"type": "image", "page_idx": 0, "img_path": "data:image/png;base64,Zmlyc3Q="},
+            {"type": "image", "page_idx": 0, "img_path": "data:image/png;base64,c2Vjb25k"},
+        ],
+        payloads=["data:image/png;base64,d3Jvbmc="],  # must not be paired with either image
+    )
+
+    assert [i["image_base64"] for i in result["images"]] == ["Zmlyc3Q=", "c2Vjb25k"]
+
+
+def test_boxes_are_converted_from_thousandths_of_the_page_to_page_points(monkeypatch):
+    result = _analyze_items(
+        monkeypatch,
+        [
+            {
+                "type": "image",
+                "page_idx": 0,
+                "img_path": "data:image/png;base64,eA==",
+                "bbox": [500, 100, 1000, 500],
+            },
+            {"type": "table", "page_idx": 1, "table_body": "<table/>", "bbox": [0, 0, 500, 250]},
+            {"type": "equation", "page_idx": 0, "text": "x", "bbox": [250, 250, 750, 500]},
+        ],
+        sizes=((600.0, 800.0), (400.0, 200.0)),
+    )
+
+    assert result["images"][0]["bbox"] == [300.0, 80.0, 600.0, 400.0]
+    assert result["tables"][0]["bbox"] == [0.0, 0.0, 200.0, 50.0]
+    assert result["formulas"][0]["bbox"] == [150.0, 200.0, 450.0, 400.0]
+
+
+def test_a_missing_or_unplaceable_box_is_returned_empty_not_wrong(monkeypatch):
+    result = _analyze_items(
+        monkeypatch,
+        [
+            {"type": "image", "page_idx": 0, "img_path": "data:image/png;base64,eA=="},
+            {"type": "equation", "page_idx": 5, "text": "x", "bbox": [1, 2, 3, 4]},  # no such page
+        ],
+    )
+
+    assert result["images"][0]["bbox"] == []
+    assert result["formulas"][0]["bbox"] == []
+
+
+def test_page_sizes_come_from_the_pdf_in_points(monkeypatch):
+    class Page:
+        def __init__(self, size):
+            self.size = size
+
+        def get_size(self):
+            return self.size
+
+    class Document:
+        closed = False
+
+        def __init__(self, data):
+            assert data == b"pdf bytes"
+            self.pages = [Page((576.0, 782.5)), Page((300.0, 400.0))]
+
+        def __len__(self):
+            return len(self.pages)
+
+        def __getitem__(self, index):
+            return self.pages[index]
+
+        def close(self):
+            Document.closed = True
+
+    pdfium = types.ModuleType("pypdfium2")
+    pdfium.PdfDocument = Document
+    monkeypatch.setitem(sys.modules, "pypdfium2", pdfium)
+    monkeypatch.setattr(adapter, "_page_sizes", REAL_PAGE_SIZES)
+
+    assert adapter._page_sizes(b"pdf bytes") == [(576.0, 782.5), (300.0, 400.0)]
+    assert Document.closed
