@@ -57,8 +57,7 @@ def upload(port: int, pdf: bytes):
         return error.code
 
 
-@pytest.fixture
-def server():
+def start_server(extra_env=None):
     port = free_port()
     env = {
         **os.environ,
@@ -67,6 +66,7 @@ def server():
         "SHUTDOWN_DRAIN_SECONDS": "1",  # far shorter than the parse that is running
         "OTEL_SDK_DISABLED": "true",
         "WORKERS": "2",
+        **(extra_env or {}),
     }
     process = subprocess.Popen(
         [sys.executable, "-m", "uvicorn", "tests.slow_fast_app:app", "--port", str(port)],
@@ -84,6 +84,12 @@ def server():
             assert process.poll() is None, "the server exited during startup"
             assert time.monotonic() < deadline, "the server never became healthy"
             time.sleep(0.3)
+    return port, process
+
+
+@pytest.fixture
+def server():
+    port, process = start_server()
     yield port, process
     if process.poll() is None:
         process.kill()
@@ -114,3 +120,25 @@ def test_an_idle_server_exits_promptly_on_sigterm(server):
 
     assert process.wait(15) in CLEAN_EXIT
     assert time.monotonic() - started < 10
+
+
+def test_a_request_that_outlives_the_server_drain_budget_is_cut_off_on_request():
+    """UVICORN_TIMEOUT_GRACEFUL_SHUTDOWN bounds how long uvicorn waits for running requests."""
+    port, process = start_server(
+        {"UVICORN_TIMEOUT_GRACEFUL_SHUTDOWN": "1", "SLOW_PARSE_SECONDS": "30"}
+    )
+    try:
+        result = {}
+        worker = threading.Thread(target=lambda: result.update(status=upload(port, small_pdf())))
+        worker.start()
+        time.sleep(1.0)
+
+        stopped = time.monotonic()
+        process.send_signal(signal.SIGTERM)
+        process.wait(20)
+
+        assert time.monotonic() - stopped < 15  # not the 30 seconds the parse would take
+    finally:
+        if process.poll() is None:
+            process.kill()
+        process.wait(10)

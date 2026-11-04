@@ -38,6 +38,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   running work gets the budget to finish, and worker processes still running afterwards are
   terminated. Shutdown no longer blocks the event loop, and a stuck worker can no longer
   keep the process alive until the platform kills it.
+  The budget covers work left over after the server has stopped. Requests still running are
+  finished by uvicorn first and are not cut off by it; set `UVICORN_TIMEOUT_GRACEFUL_SHUTDOWN`
+  (seconds) to bound that wait too, and keep the platform's termination grace period longer
+  than both settings together.
 
 ### Fast parser: additions that change nothing by default
 
@@ -91,7 +95,7 @@ Before deploying, check that:
   cleanup log reports the number of tasks it covered (it used to report zero).
 - Log lines are JSON with `service_name: accurate-parser` (`LOG_LEVEL` in any case, `SERVICE_NAME` to override), uvicorn's own records included. MinerU's loguru records go through the same JSON formatter (logger name `mineru.*`), and its progress bars are switched off, because a bar redrawn on stderr could leave the next JSON record unparseable. Output written by native libraries outside Python logging stays plain text; the one known case is MuPDF's `Object 0 0 not defined.` line.
 - The 500 MiB upload limit is enforced while the upload streams, before it is spooled to disk or read into memory (same 413, same `File too large (max 500MB)` detail). A declared length above the limit is refused without reading a byte; a chunked body, or one that understates its length, is cut off at the limit.
-- Shutdown has a time budget (`SHUTDOWN_DRAIN_SECONDS`, default 10). A thread running MinerU inference cannot be interrupted, so if inference is still running when the budget ends the process exits instead of waiting for the platform to kill it.
+- Shutdown has a time budget (`SHUTDOWN_DRAIN_SECONDS`, default 10). A thread running MinerU inference cannot be interrupted, so if inference is still running when the budget ends the process exits instead of waiting for the platform to kill it. As for the fast parser, requests still running are finished first, and `UVICORN_TIMEOUT_GRACEFUL_SHUTDOWN` bounds that wait.
 - The response shape is unchanged. `metadata.version` is the installed MinerU version.
 - `image_base64` is the image's base64 bytes, without a `data:` prefix, and every `bbox` is in page points (origin at the top left), as before. MinerU 4 reports boxes in thousandths of the page and embeds images as data URIs, so the service converts both; the boxes inherit MinerU's rounding to a thousandth of the page, under one point on a normal page. A box that cannot be placed is returned empty rather than guessed.
 
