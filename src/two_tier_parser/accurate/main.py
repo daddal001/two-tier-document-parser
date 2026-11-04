@@ -5,8 +5,8 @@ model inference in the serving process; periodic cleanup reclaims Python and
 CUDA caches. The entrypoint prepares model files before HTTP startup.
 
 Routes:
-    POST /parse: Multipart PDF extraction with a 500 MiB input limit checked
-        after reading the upload; returns Markdown, images, tables, and formulas.
+    POST /parse: Multipart PDF extraction with a 500 MiB input limit enforced while the
+        upload streams, before it is spooled or read; returns Markdown, images, tables, and formulas.
         At most MAX_INFLIGHT_DOCUMENTS documents are admitted (running plus queued);
         further requests get an immediate 503 with ``Retry-After``.
     GET /health: Service status and CUDA availability, not an inference probe.
@@ -38,11 +38,28 @@ if os.getenv("MINERU_TOOLS_CONFIG_JSON") and not os.getenv("MINERU_CONFIG"):
 
 # Configure structured logging (applications can override)
 from .. import API_VERSION
+from ..common.http_limits import BodyLimitMiddleware, route_path
 from ..common.json_logging import configure_json_logging
+from ..common.lifecycle import drain_budget, drain_pools
+from ..common.loguru_bridge import forward_loguru
+from ..common.progress_bars import disable_progress_bars
 from .models import HealthResponse, ParseResponse
 from .service import detect_device, parse_pdf
 
 configure_json_logging(service_name="accurate-parser")
+
+
+def _forward_mineru_logs() -> None:
+    """Send MinerU's loguru records through the JSON logging configured above."""
+    try:
+        from loguru import logger as loguru_logger
+    except ImportError:  # loguru arrives with MinerU; without it there is nothing to forward
+        return
+    forward_loguru(loguru_logger)
+
+
+_forward_mineru_logs()
+disable_progress_bars()  # a bar redrawn on stderr corrupts the next JSON record
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer("parser.accurate")
@@ -94,6 +111,8 @@ def _env_int(name: str, default: int, minimum: int = 1) -> int:
 
 WORKERS = _env_int("WORKERS", 2)
 MAX_TASKS_BEFORE_CLEANUP = _env_int("WORKER_MAX_TASKS", 50)
+SHUTDOWN_DRAIN_SECONDS = drain_budget()
+_exit = os._exit  # a stuck inference thread cannot be stopped; tests replace this
 # Documents admitted at once, running plus queued. A document can take minutes, so the
 # queue stays short and callers are told to retry instead of waiting behind it.
 MAX_INFLIGHT_DOCUMENTS = _env_int("MAX_INFLIGHT_DOCUMENTS", WORKERS * 2)
@@ -104,18 +123,15 @@ _inflight_documents = 0
 _PARSER_PATHS = {"/parse"}
 
 
-def _route_path(scope: Scope) -> str:
-    """Return the request path the router sees, without the ASGI ``root_path`` prefix.
+_route_path = route_path
 
-    Behind a path-prefixing proxy, servers such as uvicorn (``--root-path``) put the prefix
-    in ``scope["path"]`` and the router strips it again; comparing the raw path would
-    miss ``/parse`` and skip admission control.
-    """
-    path = scope["path"]
-    root = (scope.get("root_path") or "").rstrip("/")
-    if root and (path == root or path.startswith(root + "/")):
-        path = path[len(root) :]
-    return path.rstrip("/") or "/"
+# Largest accepted PDF, enforced while the upload streams and again on the bytes read.
+MAX_PDF_BYTES = 500 * 1024 * 1024
+# Multipart framing adds a little to the request body beyond the file itself.
+_MULTIPART_OVERHEAD_BYTES = 1024 * 1024
+# The route takes only multipart uploads; this stops any other body that never ends.
+_JSON_BODY_LIMIT_BYTES = 1024 * 1024
+_TOO_LARGE_DETAIL = "File too large (max 500MB)"
 
 
 class AdmissionMiddleware:
@@ -182,6 +198,16 @@ def _handoff(request: Request) -> None:
     request.scope["state"]["admission_slot_owned_by_handler"] = True
 
 
+# Registered before the admission middleware, so it sits closer to the routes: the 413 raised
+# from the request stream is converted to a response by the framework's exception handling,
+# and the admission slot is still released.
+app.add_middleware(
+    BodyLimitMiddleware,
+    paths=_PARSER_PATHS,
+    upload_limit=lambda: MAX_PDF_BYTES + _MULTIPART_OVERHEAD_BYTES,
+    json_limit=lambda: _JSON_BODY_LIMIT_BYTES,
+    detail=_TOO_LARGE_DETAIL,
+)
 app.add_middleware(AdmissionMiddleware)
 
 
@@ -342,12 +368,23 @@ async def startup_event() -> None:
 
 @app.on_event("shutdown")
 async def shutdown_event() -> None:
-    """Clean up thread pool on shutdown."""
+    """Stop the thread pool within the drain budget.
+
+    A thread cannot be interrupted, so if inference is still running when the budget ends
+    the process exits rather than hanging until the platform kills it.
+    """
     logger.info(
         "Shutting down, cleaning up thread pool",
         extra={"service_name": "accurate-parser", "component": "shutdown"},
     )
-    executor.shutdown(wait=True)
+    stuck = await drain_pools(
+        [executor],
+        budget_s=SHUTDOWN_DRAIN_SECONDS,
+        logger=logger,
+        service_name="accurate-parser",
+    )
+    if stuck:
+        _exit(1)
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -442,8 +479,8 @@ async def parse(request: Request, file: UploadFile = File(...)) -> ParseResponse
             )
             raise HTTPException(status_code=400, detail="Failed to read file")
 
-        # Validate file size (500MB limit for accurate parser)
-        if file_size > 500 * 1024 * 1024:
+        # Backstop for the streaming limit: the exact size of what was read.
+        if file_size > MAX_PDF_BYTES:
             logger.warning(
                 "File too large",
                 extra={
@@ -452,7 +489,7 @@ async def parse(request: Request, file: UploadFile = File(...)) -> ParseResponse
                     "size_mb": file_size / (1024 * 1024),
                 },
             )
-            raise HTTPException(status_code=413, detail="File too large (max 500MB)")
+            raise HTTPException(status_code=413, detail=_TOO_LARGE_DETAIL)
 
         # Parse PDF in thread pool
         try:
