@@ -93,6 +93,7 @@ Before deploying, check that:
 - The 500 MiB upload limit is enforced while the upload streams, before it is spooled to disk or read into memory (same 413, same `File too large (max 500MB)` detail). A declared length above the limit is refused without reading a byte; a chunked body, or one that understates its length, is cut off at the limit.
 - Shutdown has a time budget (`SHUTDOWN_DRAIN_SECONDS`, default 10). A thread running MinerU inference cannot be interrupted, so if inference is still running when the budget ends the process exits instead of waiting for the platform to kill it.
 - The response shape is unchanged. `metadata.version` is the installed MinerU version.
+- `image_base64` is the image's base64 bytes, without a `data:` prefix, and every `bbox` is in page points (origin at the top left), as before. MinerU 4 reports boxes in thousandths of the page and embeds images as data URIs, so the service converts both; the boxes inherit MinerU's rounding to a thousandth of the page, under one point on a normal page. A box that cannot be placed is returned empty rather than guessed.
 
 ### Accurate parser: additions and packaging changes
 
@@ -119,7 +120,9 @@ Before deploying, check that:
   with no recorded commit stops the download with the command that records one
   (`scripts/pin_model_revisions.py`); `MINERU_ALLOW_UNPINNED_MODELS=true` allows newest
   files instead, and `MINERU_MODEL_REVISIONS` points at another manifest. Only the
-  Hugging Face source is pinned.
+  Hugging Face source is pinned. MinerU reuses any repository it considers complete, so
+  startup also compares the commits recorded in an existing download with the manifest and
+  stops with the directory to remove when they differ, instead of serving older weights.
 - The CPU image installs the exact versions in `deploy/constraints/accurate-cpu.txt`
   (regenerate with `make constraints`). Both images install with
   `deploy/constraints/mineru-compat.txt`, which limits `docvortex` to versions MinerU 4.0.12
@@ -148,7 +151,10 @@ Before deploying, check that:
 7. Build the CUDA image where the models can be downloaded from Hugging Face; the build
    fails if the recorded commits cannot be fetched. Before the first rollout, run the
    container on the target GPU and parse a document: this repository's tests cannot run it.
-8. Pin the image by digest, not `latest`, in the deployment, so a rebuild cannot change
+8. A models volume filled before this release, or before the manifest last changed, is at a
+   different commit from the manifest and makes startup fail with a message naming the
+   directory. Remove the volume (or set `MINERU_ALLOW_UNPINNED_MODELS=true` to keep it).
+9. Pin the image by digest, not `latest`, in the deployment, so a rebuild cannot change
    what runs until the deployment is updated on purpose.
 
 ### Added

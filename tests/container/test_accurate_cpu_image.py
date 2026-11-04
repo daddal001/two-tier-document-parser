@@ -10,6 +10,7 @@ Environment:
     ACCURATE_MODELS_VOLUME  A Docker volume that keeps the downloaded models between runs.
 """
 
+import base64
 import io
 import json
 import os
@@ -249,3 +250,82 @@ def test_the_models_on_disk_are_the_pinned_commits(accurate):
         "find /models/MinerU-4_models_onnx -name '*.metadata' -exec head -qn1 {} + | sort -u",
     ).split()
     assert commits == [pinned]
+
+
+def overlap(a, b):
+    """Intersection over union of two boxes given as [x0, y0, x1, y1]."""
+    width = max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
+    height = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
+    inter = width * height
+    area = lambda box: (box[2] - box[0]) * (box[3] - box[1])  # noqa: E731
+    return inter / (area(a) + area(b) - inter)
+
+
+def test_images_are_raw_base64_with_boxes_in_page_points(accurate):
+    pymupdf = pytest.importorskip("pymupdf")
+    writer = PdfWriter()
+    for page in PdfReader(str(SAMPLE_PDF)).pages[:4]:  # the sample's first figures
+        writer.add_page(page)
+    out = io.BytesIO()
+    writer.write(out)
+    pdf = out.getvalue()
+
+    status, _, body = accurate.upload("/parse", pdf, name="figures.pdf")
+
+    assert status == 200 and body["images"], "the sample's first pages contain figures"
+    document = pymupdf.open(stream=pdf)
+    for image in body["images"]:
+        raw = base64.b64decode(image["image_base64"], validate=True)  # a data URI would fail
+        assert raw[:3] == b"\xff\xd8\xff" or raw[:4] == b"\x89PNG", "not image bytes"
+        # PyMuPDF knows where each image really sits on the page, in points. The service's box
+        # comes from a layout model, so it must overlap the real one closely, not match it.
+        real = [list(info["bbox"]) for info in document[image["page"]].get_image_info()]
+        assert max(overlap(image["bbox"], box) for box in real) > 0.85, image["bbox"]
+
+
+def test_a_model_volume_older_than_the_pin_is_refused_not_served(accurate_image, tmp_path):
+    pins = json.loads(
+        run_in_image(
+            accurate_image,
+            "python",
+            "-c",
+            "import json; from two_tier_parser.accurate.prepare_models import load_revisions; "
+            "print(json.dumps(load_revisions()))",
+        )
+    )
+    pins["opendatalab/MinerU-4_models_onnx"] = "1" * 40  # the volume's files are at another commit
+    manifest = tmp_path / "revisions.json"
+    manifest.write_text(json.dumps({"huggingface": pins}))
+    result = subprocess.run(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "--user",
+            "1000:1000",
+            "--entrypoint",
+            "python",
+            "-v",
+            f"{manifest}:/revisions.json:ro",
+            "-v",
+            f"{VOLUME}:/models",
+            "-e",
+            "MINERU_MODEL_REVISIONS=/revisions.json",
+            "-e",
+            "MINERU_HOME=/tmp/mineru",
+            "-e",
+            "MINERU_MODEL_BASE_DIR=/models",
+            "-e",
+            "MINERU_MODEL_SOURCE=huggingface",
+            "-e",
+            "MINERU_DOWNLOAD_MODELS=pipeline",
+            accurate_image,
+            "-m",
+            "two_tier_parser.accurate.prepare_models",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert "not at the pinned revision" in result.stderr

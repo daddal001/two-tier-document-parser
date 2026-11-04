@@ -35,6 +35,7 @@ class _Repo:
     def __init__(self, name, missing=()):
         self.name = name
         self.missing = tuple(missing)
+        self.repos = {}  # no Hugging Face repository, so there is no pin to compare with
         self.sources = []
 
     def ensure(self, *, source):

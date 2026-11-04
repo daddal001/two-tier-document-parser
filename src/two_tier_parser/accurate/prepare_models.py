@@ -8,6 +8,7 @@ MinerU's code does not pin its weights; this does.
 import json
 import os
 from importlib import resources
+from pathlib import Path
 from typing import Any, Mapping
 
 REVISIONS_ENV = "MINERU_MODEL_REVISIONS"
@@ -63,6 +64,42 @@ def load_revisions() -> dict:
             f"model revisions must map each repository to a full 40-character commit ({REVISIONS_ENV})"
         )
     return revisions
+
+
+def cached_commits(local_dir: Any) -> set:
+    """Return the commits huggingface_hub recorded for the files already in ``local_dir``.
+
+    Empty when the files did not come from Hugging Face (another source, or a local copy).
+    """
+    download = Path(local_dir) / ".cache" / "huggingface" / "download"
+    commits = set()
+    for metadata in download.rglob("*.metadata"):
+        lines = metadata.read_text(encoding="utf-8").splitlines()
+        if lines and lines[0].strip():
+            commits.add(lines[0].strip())
+    return commits
+
+
+def require_pinned_cache(repo: Any, revisions: Mapping[str, str]) -> None:
+    """Refuse a repository whose files on disk are not at the pinned commit.
+
+    MinerU reuses any repository it considers complete without asking Hugging Face, so a
+    pinned download never runs for it. A volume filled before the pin, or before the manifest
+    changed, would otherwise keep serving the old weights while the manifest claims another.
+    """
+    repo_id = repo.repos.get("huggingface")
+    pinned = revisions.get(repo_id) if repo_id else None
+    if pinned is None:
+        return
+    commits = cached_commits(repo.local_dir())
+    if commits and commits != {pinned}:
+        found = ", ".join(sorted(commit[:12] for commit in commits))
+        raise RuntimeError(
+            f"Model repository {repo_id!r} in {repo.local_dir()} is not at the pinned revision "
+            f"{pinned[:12]} (found {found}). Remove that directory, or the models volume, so "
+            f"the pinned revision is downloaded, or set {ALLOW_UNPINNED_ENV}=true to keep "
+            "what is there."
+        )
 
 
 def pin_huggingface_downloads(
@@ -134,10 +171,9 @@ def main() -> None:
     from mineru.model.download import verify_model_repo
     from mineru.model.registry import model_repos_for_tier
 
-    pin_huggingface_downloads(
-        load_revisions(),
-        allow_unpinned=os.getenv(ALLOW_UNPINNED_ENV, "").strip().lower() in {"1", "true", "yes"},
-    )
+    revisions = load_revisions()
+    allow_unpinned = os.getenv(ALLOW_UNPINNED_ENV, "").strip().lower() in {"1", "true", "yes"}
+    pin_huggingface_downloads(revisions, allow_unpinned=allow_unpinned)
 
     tier = requested_tier(
         os.getenv("MINERU_DOWNLOAD_MODELS", "all"), gpu_available=_gpu_available()
@@ -148,6 +184,8 @@ def main() -> None:
         raise RuntimeError(f"MinerU did not select model repositories for tier {tier!r}")
     for repo in repos:
         repo.ensure(source=source)
+        if not allow_unpinned:
+            require_pinned_cache(repo, revisions)
         status = verify_model_repo(repo)
         if not status.ready:
             raise RuntimeError(
