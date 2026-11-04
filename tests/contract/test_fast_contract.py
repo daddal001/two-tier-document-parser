@@ -7,6 +7,7 @@ them but a removed key, a renamed field or a changed status code does.
 
 import sys
 from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
 
 import pymupdf
@@ -148,11 +149,65 @@ def test_saturated_admission_is_503_with_retry_after(client, monkeypatch, path, 
     assert response.json() == {"detail": "document_admission_saturated"}
 
 
-def test_full_pool_queue_is_503(client, monkeypatch, pdf_bytes):
-    monkeypatch.setattr(fast_main, "_executor_queue_depth", lambda: 10_000)
-    response = client.post("/parse", files=_upload(pdf_bytes))
+POOL_SATURATION = [
+    ("/parse", "_executor_queue_depth", "parse_pool_saturated"),
+    ("/parse-pages", "_pages_executor_queue_depth", "parse_pages_pool_saturated"),
+]
+
+
+@pytest.mark.parametrize(("path", "queue_depth", "detail"), POOL_SATURATION)
+def test_pool_saturation_is_503(client, monkeypatch, pdf_bytes, path, queue_depth, detail):
+    monkeypatch.setattr(fast_main, queue_depth, lambda: 10_000)
+    response = client.post(path, files=_upload(pdf_bytes))
     assert response.status_code == 503
-    assert response.json() == {"detail": "parse_pool_saturated"}
+    assert response.json() == {"detail": detail}
+
+
+@pytest.mark.xfail(
+    strict=True, reason="pool-saturation 503s omit Retry-After; fixed with the Step 2 hardening"
+)
+@pytest.mark.parametrize(("path", "queue_depth", "detail"), POOL_SATURATION)
+def test_pool_saturation_advertises_retry_after(
+    client, monkeypatch, pdf_bytes, path, queue_depth, detail
+):
+    monkeypatch.setattr(fast_main, queue_depth, lambda: 10_000)
+    response = client.post(path, files=_upload(pdf_bytes))
+    assert response.headers["retry-after"] == "2"
+
+
+class _BrokenPool:
+    """Stands in for a process pool whose worker died."""
+
+    def submit(self, *_args, **_kwargs):
+        raise BrokenProcessPool("worker exited")
+
+    def shutdown(self, *_args, **_kwargs):
+        pass
+
+
+@pytest.mark.parametrize(
+    ("path", "pool"), [("/parse", "executor"), ("/parse-pages", "pages_executor")]
+)
+def test_broken_pool_is_503_with_retry_after_and_recovers(
+    client, monkeypatch, pdf_bytes, path, pool
+):
+    replacements = []
+
+    def replacement(workers):
+        replacements.append(workers)
+        return ThreadPoolExecutor(max_workers=1)
+
+    monkeypatch.setattr(fast_main, pool, _BrokenPool())
+    monkeypatch.setattr(fast_main, "_new_pool", replacement)
+
+    first = client.post(path, files=_upload(pdf_bytes))
+    assert first.status_code == 503
+    assert first.headers["retry-after"] == "2"
+    assert first.json() == {"detail": "parser_worker_unavailable"}
+
+    second = client.post(path, files=_upload(pdf_bytes))  # the replacement pool serves it
+    assert second.status_code == 200
+    assert len(replacements) == 1
 
 
 def test_oversized_upload_is_413(client, monkeypatch, pdf_bytes):

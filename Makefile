@@ -1,4 +1,4 @@
-.PHONY: help install dev build build-accurate up down logs clean clean-volumes test test-unit test-integration test-coverage lint format type-check coverage check hooks
+.PHONY: help install dev build build-accurate up down logs clean clean-volumes test test-unit test-integration test-container test-coverage lint format type-check coverage check hooks
 
 .DEFAULT_GOAL := help
 
@@ -27,7 +27,7 @@ logs:
 
 # Development commands
 test:
-	pytest tests/ -v -m "not integration and not models"
+	pytest tests/ -v -m "not integration and not models and not container"
 
 test-unit:
 	pytest tests/unit/ -v -m "not models"
@@ -35,8 +35,11 @@ test-unit:
 test-integration:
 	pytest tests/integration/ -v -m integration --run-integration
 
+test-container:
+	pytest tests/container -v -m container
+
 test-coverage:
-	pytest tests/ -m "not integration and not models" --cov=src/two_tier_parser --cov-report=html --cov-report=term
+	pytest tests/ -m "not integration and not models and not container" --cov=src/two_tier_parser --cov-branch --cov-report=html --cov-report=term
 
 lint:
 	flake8 src/ tests/ examples/ scripts/
@@ -100,6 +103,7 @@ help:
 	@echo "  make test             - Unit and contract tests (no live services, no models)"
 	@echo "  make test-unit        - Unit tests only"
 	@echo "  make test-integration - Tests against running services"
+	@echo "  make test-container   - Build the fast image and test it under pod-like limits (needs Docker)"
 	@echo "  make test-coverage    - Tests with coverage report"
 	@echo "  make check            - black, isort, flake8 and mypy (CI also runs every pre-commit hook)"
 	@echo "  make lint             - flake8"
