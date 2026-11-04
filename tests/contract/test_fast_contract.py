@@ -164,7 +164,9 @@ def test_pool_saturation_is_503(client, monkeypatch, pdf_bytes, path, queue_dept
 
 
 @pytest.mark.xfail(
-    strict=True, reason="pool-saturation 503s omit Retry-After; fixed with the Step 2 hardening"
+    strict=True,
+    raises=AssertionError,
+    reason="pool-saturation 503s omit Retry-After; fixed with the Step 2 hardening",
 )
 @pytest.mark.parametrize(("path", "queue_depth", "detail"), POOL_SATURATION)
 def test_pool_saturation_advertises_retry_after(
@@ -172,7 +174,8 @@ def test_pool_saturation_advertises_retry_after(
 ):
     monkeypatch.setattr(fast_main, queue_depth, lambda: 10_000)
     response = client.post(path, files=_upload(pdf_bytes))
-    assert response.headers["retry-after"] == "2"
+    assert response.status_code == 503
+    assert response.headers.get("retry-after") == "2"
 
 
 class _BrokenPool:

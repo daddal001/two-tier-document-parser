@@ -150,17 +150,47 @@ def test_claim_check_reads_from_the_object_store(
         assert non_json_lines(service.logs()) == []
 
 
+# Object reads only: no listing of buckets or objects, and no bucket-location lookup (a
+# configured region makes the SDK skip that lookup).
+OBJECT_READ_ONLY_POLICY = {
+    "Version": "2012-10-17",
+    "Statement": [
+        {"Effect": "Allow", "Action": ["s3:GetObject"], "Resource": ["arn:aws:s3:::documents/*"]},
+    ],
+}
+REGION = "us-east-1"
+
+
+@pytest.fixture(scope="module")
+def read_only_user(object_store, stored_sample, tmp_path_factory):
+    """Credentials that may read objects but not list buckets. A failure here is an error."""
+    policy = tmp_path_factory.mktemp("policy") / "object-read-only.json"
+    policy.write_text(json.dumps(OBJECT_READ_ONLY_POLICY))
+    mount = ((str(policy), "/policy.json"),)
+    object_store.mc(
+        "admin", "policy", "create", "local", "object-read-only", "/policy.json", mounts=mount
+    )
+    object_store.mc("admin", "user", "add", "local", "reader", "reader-secret-1")
+    object_store.mc("admin", "policy", "attach", "local", "object-read-only", "--user", "reader")
+    reader = object_store.client("reader", "reader-secret-1", region=REGION)
+    with pytest.raises(Exception):
+        reader.list_buckets()  # the credentials really cannot list buckets
+    bucket, key = stored_sample
+    assert reader.get_object(bucket, key).read(5) == b"%PDF-"  # and can still read the object
+    return "reader", "reader-secret-1"
+
+
 @pytest.mark.xfail(
     strict=True,
+    raises=AssertionError,
     reason="the health probe lists every bucket, so credentials that may only read objects "
     "report degraded; fixed with the Step 3 health change",
 )
-def test_health_with_read_only_credentials(fast_image, network, object_store, stored_sample):
-    object_store.mc("admin user add local reader reader-secret-1")
-    object_store.mc("admin policy attach local readonly --user reader")
-    env = store_env(object_store, "reader", "reader-secret-1")
+def test_health_with_read_only_credentials(fast_image, network, object_store, read_only_user):
+    env = {**store_env(object_store, *read_only_user), "OBJECT_STORE_REGION": REGION}
     with run_pod(fast_image, env=env, network=network) as service:
         _, _, health = service.json("GET", "/health")
+        assert health["storage_configured"] is True
         assert health["status"] == "healthy"
 
 

@@ -188,27 +188,33 @@ class ObjectStore:
         self.endpoint = f"{name}:9000"
         self.host_endpoint = f"127.0.0.1:{host_port}"
 
-    def mc(self, *args: str) -> str:
-        script = (
-            f"mc alias set local http://{self.endpoint} {ROOT_USER} {ROOT_PASSWORD} >/dev/null && "
-            "mc " + " ".join(args)
-        )
+    def mc(self, *args: str, mounts: tuple[tuple[str, str], ...] = ()) -> str:
+        """Run the object store's admin client; its image has no shell, so call it directly."""
+        volumes = [flag for host, inside in mounts for flag in ("-v", f"{host}:{inside}:ro")]
         return docker(
             "run",
             "--rm",
             "--network",
             self.network,
+            *volumes,
+            "-e",
+            f"MC_HOST_local=http://{ROOT_USER}:{ROOT_PASSWORD}@{self.endpoint}",
             "--entrypoint",
-            "/bin/sh",
+            "/usr/bin/mc",
             MC_IMAGE,
-            "-c",
-            script,
+            *args,
         )
 
-    def client(self, access_key: str = ROOT_USER, secret_key: str = ROOT_PASSWORD):
+    def client(self, access_key: str = ROOT_USER, secret_key: str = ROOT_PASSWORD, region=None):
         from minio import Minio
 
-        return Minio(self.host_endpoint, access_key=access_key, secret_key=secret_key, secure=False)
+        return Minio(
+            self.host_endpoint,
+            access_key=access_key,
+            secret_key=secret_key,
+            secure=False,
+            region=region,
+        )
 
 
 @pytest.fixture(scope="module")
