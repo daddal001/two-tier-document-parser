@@ -3,7 +3,10 @@
 These tests need a Docker daemon and a network, so they carry the ``container`` marker and
 are left out of the default run. Select them with ``pytest -m container``.
 
+They are opt-in: a bare ``pytest`` skips them (see ``pytest_collection_modifyitems``).
+
 Environment:
+    RUN_CONTAINER_TESTS  Set to 1 to run them without naming the marker.
     FAST_IMAGE        Test this prebuilt image instead of building ``deploy/Dockerfile.fast``.
     BASELINE_IMAGE    An older image to compare responses against (the comparison test skips
                       without it).
@@ -63,6 +66,22 @@ def docker(*args: str, check: bool = True, timeout: int = 900) -> str:
     if check and result.returncode:
         raise RuntimeError(f"docker {' '.join(args)} failed:\n{result.stdout}\n{result.stderr}")
     return result.stdout.strip()
+
+
+def pytest_collection_modifyitems(config, items):
+    """Keep these tests out of ordinary runs: they build images and start containers.
+
+    They run only when ``-m`` names the marker (``pytest -m container``) or
+    ``RUN_CONTAINER_TESTS=1`` is set, so a bare ``pytest`` never needs Docker or a network.
+    """
+    expression = config.getoption("markexpr") or ""
+    selected = "container" in expression.replace("not container", "")
+    if selected or os.getenv("RUN_CONTAINER_TESTS") == "1":
+        return
+    skip = pytest.mark.skip(reason="container tests are opt-in: run pytest -m container")
+    for item in items:
+        if "tests/container" in item.nodeid:
+            item.add_marker(skip)
 
 
 @pytest.fixture(scope="session", autouse=True)
