@@ -34,6 +34,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`task_id`, `duration_ms`, `error_type`, `correlation_id`). `LOG_LEVEL` is accepted in any
   case; emitted `level` values stay upper case.
 - Trace export needs an explicit `OTEL_EXPORTER_OTLP_ENDPOINT`.
+- Shutdown has a time budget (`SHUTDOWN_DRAIN_SECONDS`, default 10). Queued work is dropped,
+  running work gets the budget to finish, and worker processes still running afterwards are
+  terminated. Shutdown no longer blocks the event loop, and a stuck worker can no longer
+  keep the process alive until the platform kills it.
 
 ### Fast parser: additions that change nothing by default
 
@@ -85,7 +89,9 @@ Before deploying, check that:
 - The response size reported in the "Parse complete" log line is measured on the worker
   thread, so serializing a large result no longer blocks the event loop, and the periodic
   cleanup log reports the number of tasks it covered (it used to report zero).
-- Log lines are JSON with `service_name: accurate-parser` (`LOG_LEVEL` in any case, `SERVICE_NAME` to override), uvicorn's own records included. Output printed by MinerU and its libraries (progress bars, loguru lines) is not rewritten and stays plain text.
+- Log lines are JSON with `service_name: accurate-parser` (`LOG_LEVEL` in any case, `SERVICE_NAME` to override), uvicorn's own records included. MinerU's loguru records go through the same JSON formatter (logger name `mineru.*`), and its progress bars are switched off, because a bar redrawn on stderr could leave the next JSON record unparseable. Output written by native libraries outside Python logging stays plain text; the one known case is MuPDF's `Object 0 0 not defined.` line.
+- The 500 MiB upload limit is enforced while the upload streams, before it is spooled to disk or read into memory (same 413, same `File too large (max 500MB)` detail). A declared length above the limit is refused without reading a byte; a chunked body, or one that understates its length, is cut off at the limit.
+- Shutdown has a time budget (`SHUTDOWN_DRAIN_SECONDS`, default 10). A thread running MinerU inference cannot be interrupted, so if inference is still running when the budget ends the process exits instead of waiting for the platform to kill it.
 - The response shape is unchanged. `metadata.version` is the installed MinerU version.
 
 ### Accurate parser: additions and packaging changes
@@ -100,8 +106,28 @@ Before deploying, check that:
   `basic` or `standard`.
 - Docker Compose services are now profile based: `accurate-parser` became
   `accurate-parser-cuda` (profile `cuda`) and `accurate-parser-cpu` (profile `cpu`); start
-  one with `docker compose --profile cpu up`. Model files persist in the `mineru-models`
-  and `cpu-models` volumes; the `huggingface-cache` volume is no longer used.
+  one with `docker compose --profile cpu up`. The CPU profile keeps its model files in the
+  `cpu-models` volume. The `mineru-models` and `huggingface-cache` volumes are no longer
+  used: the CUDA image bakes its models in, and a volume over them would hide the models of
+  a newer image.
+- Both accurate images run as user 1000 and keep everything MinerU writes under
+  `MINERU_HOME=/opt/mineru` (also `HOME`), so they work when the platform forces that user
+  and sets no home directory. Nothing lives under `/root` any more.
+- Model weights are downloaded at the commits recorded in
+  `src/two_tier_parser/accurate/model_revisions.json`, not at whatever the repositories hold
+  on build day, and the CUDA image bakes them in through the same pinned path. A repository
+  with no recorded commit stops the download with the command that records one
+  (`scripts/pin_model_revisions.py`); `MINERU_ALLOW_UNPINNED_MODELS=true` allows newest
+  files instead, and `MINERU_MODEL_REVISIONS` points at another manifest. Only the
+  Hugging Face source is pinned.
+- The CPU image installs the exact versions in `deploy/constraints/accurate-cpu.txt`
+  (regenerate with `make constraints`). Both images install with
+  `deploy/constraints/mineru-compat.txt`, which limits `docvortex` to versions MinerU 4.0.12
+  works with: its own metadata allows 0.6.8 and later, which fail every parse with
+  `TypeError: argument 'private_ranges'`. The CUDA image also freezes the base image's torch
+  and CUDA packages, so an install that needs a different version fails the build instead of
+  replacing the stack vLLM was built for. The rest of the CUDA image's dependencies still
+  resolve at build time.
 - The legacy `MINERU_TOOLS_CONFIG_JSON` variable is still honored as an alias for MinerU 4's
   `MINERU_CONFIG`; its JSON keys are not read, so move model locations to `model.base_dir`
   or `MINERU_MODEL_BASE_DIR`.
@@ -117,6 +143,13 @@ Before deploying, check that:
    start downloads the MinerU 4 model repositories.
 5. A tool that read MinerU 2 or 3 internals (magic-pdf JSON keys, `mineru-models-download`)
    must move to MinerU 4's configuration; the service itself needs no change.
+6. Remove any `mineru-models` volume mount from overrides. A volume mounted at
+   `/root/.mineru` or `/opt/mineru` shadows the models baked into the image.
+7. Build the CUDA image where the models can be downloaded from Hugging Face; the build
+   fails if the recorded commits cannot be fetched. Before the first rollout, run the
+   container on the target GPU and parse a document: this repository's tests cannot run it.
+8. Pin the image by digest, not `latest`, in the deployment, so a rebuild cannot change
+   what runs until the deployment is updated on purpose.
 
 ### Added
 - OpenTelemetry API-only instrumentation for distributed tracing (74+ span points)
