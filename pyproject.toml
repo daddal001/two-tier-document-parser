@@ -153,6 +153,7 @@ markers = [
     "integration: Integration tests",
     "slow: Slow tests",
     "models: Requires the pinned MinerU, native dependencies and downloaded models",
+    "container: Builds and runs the fast image; needs a Docker daemon (run with -m container)",
 ]
 
 [tool.coverage.run]
@@ -164,6 +165,9 @@ omit = [
 ]
 
 [tool.coverage.report]
+# Ratchet: raise this when coverage rises, never lower it. The service tests run the parser in
+# threads, so worker processes are not measured.
+fail_under = 61
 exclude_lines = [
     "pragma: no cover",
     "def __repr__",

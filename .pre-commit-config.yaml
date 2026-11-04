@@ -91,7 +91,7 @@ repos:
         files: ^(src/.*\.py|pyproject\.toml)$
       - id: pytest
         name: tests (no live services, no models)
-        entry: pytest tests -q -m "not models and not integration"
+        entry: pytest tests -q -m "not models and not integration and not container" --cov=src/two_tier_parser --cov-branch --cov-report=term:skip-covered
         language: system
         pass_filenames: false
         files: ^(src/.*\.py|tests/.*\.py|scripts/.*\.py|pyproject\.toml|uv\.lock)$
