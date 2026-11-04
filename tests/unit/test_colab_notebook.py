@@ -42,6 +42,14 @@ def test_it_tests_the_tier_and_engine_the_cuda_image_serves(cells):
     assert "deploy/constraints/mineru-compat.txt" in text
 
 
+def test_the_checks_import_only_what_the_notebook_kernel_has_installed(cells):
+    text = "\n".join(code_cells(cells))
+
+    # The checks import pypdf in the notebook's own kernel, not in the isolated environment.
+    assert "from pypdf import" in text
+    assert 'sh("pip install -q uv pypdf")' in text
+
+
 def test_the_vllm_release_is_read_from_the_dockerfile_it_must_match(cells):
     text = "\n".join(code_cells(cells))
     dockerfile = (ROOT / "deploy" / "Dockerfile.accurate").read_text()
