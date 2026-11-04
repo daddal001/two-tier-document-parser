@@ -1,0 +1,7 @@
+# Version limits MinerU's own metadata does not express. Both accurate images install with
+# this file. Re-test a real parse before raising a bound (the container tests do that).
+#
+# MinerU 4.0.12 declares docvortex>=0.5.16,<1, but its PDF text extraction fails on 0.6.8 and
+# later (TypeError: argument 'private_ranges': 'int' object is not an instance of 'tuple').
+# 0.5.16 through 0.6.7 were each checked with a real parse.
+docvortex>=0.5.16,<0.6.8

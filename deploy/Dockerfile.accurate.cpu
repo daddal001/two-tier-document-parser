@@ -3,19 +3,28 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgl1 libglib2.0-0 libgomp1 fonts-noto-core fonts-noto-cjk \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
+# Every dependency, including MinerU's own, is pinned by this file so a rebuild installs the
+# same versions. Regenerate it with `make constraints` after changing dependencies.
+COPY deploy/constraints/accurate-cpu.txt /tmp/constraints.txt
 COPY MinerU /opt/MinerU
-RUN pip install --no-cache-dir -e /opt/MinerU
+RUN pip install --no-cache-dir -c /tmp/constraints.txt -e /opt/MinerU
 COPY pyproject.toml README.md LICENSE ./
 COPY src/ src/
 # No `accurate` extra: it adds PyTorch, whose default Linux wheel bundles CUDA libraries.
 # The ONNX pipeline backend selected below does not need it.
-RUN pip install --no-cache-dir '.[telemetry,telemetry-sdk]'
+RUN pip install --no-cache-dir -c /tmp/constraints.txt '.[telemetry,telemetry-sdk]'
 COPY deploy/entrypoint-accurate.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
+# Run unprivileged. The platform may force UID 1000 and set no HOME, so everything MinerU
+# writes lives under MINERU_HOME, which that user owns. The models directory is owned by the
+# same user, so a new volume mounted there inherits it and the first start can download.
 ENV WORKERS=2 MINERU_DEVICE_MODE=cpu MINERU_DOWNLOAD_MODELS=pipeline \
     MINERU_MODEL_SMALL_BACKEND=onnx MINERU_MODEL_SOURCE=huggingface \
+    MINERU_HOME=/opt/mineru HOME=/opt/mineru \
     MINERU_MODEL_BASE_DIR=/models \
     HF_HOME=/models/huggingface
+RUN mkdir -p /opt/mineru /models && chown -R 1000:1000 /opt/mineru /models
+USER 1000
 EXPOSE 8005
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8005/health')"

@@ -42,9 +42,6 @@ services:
     container_name: accurate-parser
     ports:
       - "8005:8005"
-    volumes:
-      # Persist MinerU model bundles across container rebuilds
-      - mineru-models:/root/.mineru
     environment:
       WORKERS: "2"
       LOG_LEVEL: INFO
@@ -104,5 +101,4 @@ networks:
     name: document-parser-network
 
 volumes:
-  mineru-models:
   cpu-models:

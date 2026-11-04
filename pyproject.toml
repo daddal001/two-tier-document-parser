@@ -63,7 +63,7 @@ fast = [
 ]
 accurate = [
     "torch>=2.0.0",
-    "transformers>=4.53.0",
+    "transformers>=5.10.1,<6",  # MinerU 4 needs >=5.10.1,<6; older releases have published advisories
 ]
 dev = [
     "pytest>=7.4.0",
@@ -110,6 +110,9 @@ two-tier-parser-demo = "two_tier_parser.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"two_tier_parser.accurate" = ["model_revisions.json"]
 
 [tool.black]
 line-length = 100
@@ -165,9 +168,10 @@ omit = [
 ]
 
 [tool.coverage.report]
-# Ratchet: raise this when coverage rises, never lower it. The service tests run the parser in
+# Ratchet: raise this when coverage rises, never lower it (it was 61 before the accurate tier
+# was part of the suite). The service tests run the parser in
 # threads, so worker processes are not measured.
-fail_under = 61
+fail_under = 80
 exclude_lines = [
     "pragma: no cover",
     "def __repr__",

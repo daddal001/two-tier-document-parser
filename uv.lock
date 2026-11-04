@@ -2207,7 +2207,7 @@ requires-dist = [
     { name = "requests", specifier = ">=2.31.0" },
     { name = "rich", specifier = ">=13.0.0" },
     { name = "torch", marker = "extra == 'accurate'", specifier = ">=2.0.0" },
-    { name = "transformers", marker = "extra == 'accurate'", specifier = ">=4.53.0" },
+    { name = "transformers", marker = "extra == 'accurate'", specifier = ">=5.10.1,<6" },
     { name = "urllib3", specifier = ">=2.8.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.24.0" },
 ]
