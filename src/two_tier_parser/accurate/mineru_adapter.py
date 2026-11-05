@@ -57,6 +57,9 @@ def analyze(pdf_bytes: bytes, *, use_vlm: bool) -> dict[str, Any]:
                         "bbox": bbox,
                     }
                 )
+            elif item.get("img_path"):
+                # a table MinerU could not recognize is rendered as its picture
+                _add_image(images, image_ids, _raw_base64(item["img_path"]), page, bbox)
         elif kind == "equation":
             content = item.get("text") or ""
             if not content and item.get("img_path"):
@@ -102,9 +105,9 @@ def _reference_images(markdown: str, image_ids: dict[str, str]) -> str:
     Each picture is returned once, in ``images``; embedding it again in the Markdown made
     an 11 page response over a thousand times larger. Images are matched by content, so
     the ids stay right whatever order the Markdown shows them in. A payload with no entry
-    in ``images`` becomes ``unlisted-image`` rather than staying embedded.
+    in ``images`` stays embedded: it is the only copy, and dropping it would lose content.
     """
-    return _INLINE_IMAGE.sub(lambda m: image_ids.get(m.group(1), "unlisted-image"), markdown)
+    return _INLINE_IMAGE.sub(lambda m: image_ids.get(m.group(1), m.group(0)), markdown)
 
 
 def _image_payloads(value: Any) -> Iterator[str]:

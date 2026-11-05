@@ -310,11 +310,29 @@ def test_images_inside_html_are_replaced_too(monkeypatch):
     assert result["markdown"] == '<table><tr><td><img src="page_0_img_0" /></td></tr></table>'
 
 
-def test_an_image_with_no_matching_entry_is_marked_not_embedded(monkeypatch):
-    result = _with_markdown(monkeypatch, "![](data:image/png;base64,UNKNOWN0)", [_image("QUJD")])
+def test_an_image_with_no_matching_entry_stays_embedded(monkeypatch):
+    # it is the only copy of that picture, so it is kept rather than lost
+    markdown = "![](data:image/png;base64,UNKNOWN0)"
 
-    assert "UNKNOWN0" not in result["markdown"]
-    assert result["markdown"] == "![](unlisted-image)"
+    result = _with_markdown(monkeypatch, markdown, [_image("QUJD")])
+
+    assert result["markdown"] == markdown
+
+
+def test_an_unrecognized_table_keeps_its_picture(monkeypatch):
+    markdown = "![](data:image/png;base64,QUJD)"
+    table = {
+        "type": "table",
+        "page_idx": 0,
+        "table_body": "",
+        "img_path": "data:image/png;base64,QUJD",
+    }
+
+    result = _with_markdown(monkeypatch, markdown, [table])
+
+    assert result["markdown"] == "![](page_0_img_0)"
+    assert result["images"][0]["image_base64"] == "QUJD"
+    assert result["tables"] == []
 
 
 def test_markdown_without_images_is_untouched(monkeypatch):
