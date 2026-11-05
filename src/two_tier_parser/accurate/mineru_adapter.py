@@ -3,6 +3,7 @@
 Keep upstream imports lazy so API and contract checks run without model weights.
 """
 
+import re
 from typing import Any, Iterator
 
 
@@ -29,6 +30,7 @@ def analyze(pdf_bytes: bytes, *, use_vlm: bool) -> dict[str, Any]:
     images: list[dict[str, Any]] = []
     tables: list[dict[str, Any]] = []
     formulas: list[dict[str, Any]] = []
+    image_ids: dict[str, str] = {}
     for item in blocks:
         kind = item.get("type")
         page = item.get("page_idx", 0)
@@ -38,9 +40,11 @@ def analyze(pdf_bytes: bytes, *, use_vlm: bool) -> dict[str, Any]:
             # ordered payload list is only the fallback for an item that carries no source.
             source = item.get("img_path") or item.get("content") or ""
             image_base64 = _raw_base64(source or (payloads.pop(0) if payloads else ""))
+            image_id = f"page_{page}_img_{len(images)}"
+            image_ids.setdefault(image_base64, image_id)
             images.append(
                 {
-                    "image_id": f"page_{page}_img_{len(images)}",
+                    "image_id": image_id,
                     "image_base64": image_base64,
                     "page": page,
                     "bbox": bbox,
@@ -70,12 +74,26 @@ def analyze(pdf_bytes: bytes, *, use_vlm: bool) -> dict[str, Any]:
                 )
 
     return {
-        "markdown": render_markdown(middle_json),
+        "markdown": _reference_images(render_markdown(middle_json), image_ids),
         "images": images,
         "tables": tables,
         "formulas": formulas,
         "pages": len(middle_json.pages),
     }
+
+
+_INLINE_IMAGE = re.compile(r"data:image/[\w.+-]+;base64,([A-Za-z0-9+/=]+)")
+
+
+def _reference_images(markdown: str, image_ids: dict[str, str]) -> str:
+    """Replace the base64 images MinerU 4 inlines in Markdown with their ``image_id``.
+
+    Each picture is returned once, in ``images``; embedding it again in the Markdown made
+    an 11 page response over a thousand times larger. Images are matched by content, so
+    the ids stay right whatever order the Markdown shows them in. A payload with no entry
+    in ``images`` becomes ``unlisted-image`` rather than staying embedded.
+    """
+    return _INLINE_IMAGE.sub(lambda m: image_ids.get(m.group(1), "unlisted-image"), markdown)
 
 
 def _image_payloads(value: Any) -> Iterator[str]:

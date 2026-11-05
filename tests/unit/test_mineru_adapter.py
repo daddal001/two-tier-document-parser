@@ -249,3 +249,84 @@ def test_page_sizes_come_from_the_pdf_in_points(monkeypatch):
 
     assert adapter._page_sizes(b"pdf bytes") == [(576.0, 782.5), (300.0, 400.0)]
     assert Document.closed
+
+
+# ---- Markdown refers to images instead of embedding them ----
+
+
+def _with_markdown(monkeypatch, markdown, items, **kwargs):
+    import mineru.render as render_module
+
+    result = _analyze_items(monkeypatch, items, **kwargs)
+    monkeypatch.setattr(render_module, "render_markdown", lambda _: markdown)
+    import mineru.backend.analyze as analyze_module
+
+    middle = type("M", (), {"pages": [1], "model_dump": lambda self: {"pages": []}})()
+    monkeypatch.setattr(analyze_module, "doc_analyze", lambda **k: (middle, object()))
+    monkeypatch.setattr(render_module, "render_content_list", lambda _: items)
+    monkeypatch.setattr(adapter, "_page_sizes", lambda _: [(600.0, 800.0)])
+    return adapter.analyze(b"pdf", use_vlm=False) if result is not None else None
+
+
+def _image(payload, page=0):
+    return {"type": "image", "page_idx": page, "img_path": f"data:image/png;base64,{payload}"}
+
+
+def test_inline_image_data_is_replaced_by_the_image_id(monkeypatch):
+    markdown = (
+        "Intro\n\n![figure](data:image/png;base64,QUJD)\n\nText ![](data:image/png;base64,REVG)\n"
+    )
+
+    result = _with_markdown(monkeypatch, markdown, [_image("QUJD"), _image("REVG", page=1)])
+
+    assert "base64" not in result["markdown"]
+    assert "![figure](page_0_img_0)" in result["markdown"]
+    assert "![](page_1_img_1)" in result["markdown"]
+    assert [i["image_id"] for i in result["images"]] == ["page_0_img_0", "page_1_img_1"]
+
+
+def test_images_are_matched_by_content_not_by_order(monkeypatch):
+    # the Markdown shows the second image first; ids must still follow the bytes
+    markdown = "![](data:image/png;base64,REVG) then ![](data:image/png;base64,QUJD)"
+
+    result = _with_markdown(monkeypatch, markdown, [_image("QUJD"), _image("REVG", page=1)])
+
+    assert result["markdown"] == "![](page_1_img_1) then ![](page_0_img_0)"
+
+
+def test_the_same_image_used_twice_keeps_one_reference(monkeypatch):
+    markdown = "![a](data:image/png;base64,QUJD) ![b](data:image/png;base64,QUJD)"
+
+    result = _with_markdown(monkeypatch, markdown, [_image("QUJD")])
+
+    assert result["markdown"] == "![a](page_0_img_0) ![b](page_0_img_0)"
+
+
+def test_images_inside_html_are_replaced_too(monkeypatch):
+    markdown = '<table><tr><td><img src="data:image/jpeg;base64,QUJD" /></td></tr></table>'
+
+    result = _with_markdown(monkeypatch, markdown, [_image("QUJD")])
+
+    assert result["markdown"] == '<table><tr><td><img src="page_0_img_0" /></td></tr></table>'
+
+
+def test_an_image_with_no_matching_entry_is_marked_not_embedded(monkeypatch):
+    result = _with_markdown(monkeypatch, "![](data:image/png;base64,UNKNOWN0)", [_image("QUJD")])
+
+    assert "UNKNOWN0" not in result["markdown"]
+    assert result["markdown"] == "![](unlisted-image)"
+
+
+def test_markdown_without_images_is_untouched(monkeypatch):
+    text = "# Title\n\nA paragraph with no pictures and a data: mention.\n"
+
+    assert _with_markdown(monkeypatch, text, [])["markdown"] == text
+
+
+def test_the_markdown_stays_small_however_large_the_images_are(monkeypatch):
+    payload = "A" * 2_000_000  # a 1.5 MB picture
+
+    result = _with_markdown(monkeypatch, f"![](data:image/png;base64,{payload})", [_image(payload)])
+
+    assert len(result["markdown"]) < 100
+    assert len(result["images"][0]["image_base64"]) == 2_000_000  # it is returned, once, in images

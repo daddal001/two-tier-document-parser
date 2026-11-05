@@ -115,6 +115,8 @@ def test_a_parse_returns_markdown_from_the_pinned_mineru(accurate, two_page_pdf)
     assert body["metadata"]["pages"] == 2
     assert body["metadata"]["version"].startswith("4.")
     assert set(body) >= {"markdown", "images", "tables", "formulas", "metadata"}
+    # pictures are returned once, in "images"; the Markdown only refers to them
+    assert "base64," not in body["markdown"]
 
 
 def test_a_second_document_gets_503_with_retry_after_while_health_stays_up(accurate, two_page_pdf):
