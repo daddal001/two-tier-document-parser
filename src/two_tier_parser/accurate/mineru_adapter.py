@@ -39,16 +39,12 @@ def analyze(pdf_bytes: bytes, *, use_vlm: bool) -> dict[str, Any]:
             # MinerU 4 puts the image in the item itself as a data URI. Pairing with the
             # ordered payload list is only the fallback for an item that carries no source.
             source = item.get("img_path") or item.get("content") or ""
-            image_base64 = _raw_base64(source or (payloads.pop(0) if payloads else ""))
-            image_id = f"page_{page}_img_{len(images)}"
-            image_ids.setdefault(image_base64, image_id)
-            images.append(
-                {
-                    "image_id": image_id,
-                    "image_base64": image_base64,
-                    "page": page,
-                    "bbox": bbox,
-                }
+            _add_image(
+                images,
+                image_ids,
+                _raw_base64(source or (payloads.pop(0) if payloads else "")),
+                page,
+                bbox,
             )
         elif kind == "table":
             content = item.get("table_body") or ""
@@ -63,6 +59,9 @@ def analyze(pdf_bytes: bytes, *, use_vlm: bool) -> dict[str, Any]:
                 )
         elif kind == "equation":
             content = item.get("text") or ""
+            if not content and item.get("img_path"):
+                # an equation MinerU could not recognize is rendered as its picture
+                _add_image(images, image_ids, _raw_base64(item["img_path"]), page, bbox)
             if content:
                 formulas.append(
                     {
@@ -80,6 +79,18 @@ def analyze(pdf_bytes: bytes, *, use_vlm: bool) -> dict[str, Any]:
         "formulas": formulas,
         "pages": len(middle_json.pages),
     }
+
+
+def _add_image(
+    images: list[dict[str, Any]],
+    image_ids: dict[str, str],
+    image_base64: str,
+    page: int,
+    bbox: list[float],
+) -> None:
+    image_id = f"page_{page}_img_{len(images)}"
+    image_ids.setdefault(image_base64, image_id)
+    images.append({"image_id": image_id, "image_base64": image_base64, "page": page, "bbox": bbox})
 
 
 _INLINE_IMAGE = re.compile(r"data:image/[\w.+-]+;base64,([A-Za-z0-9+/=]+)")

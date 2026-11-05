@@ -330,3 +330,19 @@ def test_the_markdown_stays_small_however_large_the_images_are(monkeypatch):
 
     assert len(result["markdown"]) < 100
     assert len(result["images"][0]["image_base64"]) == 2_000_000  # it is returned, once, in images
+
+
+def test_an_unrecognized_equation_keeps_its_picture(monkeypatch):
+    markdown = "before ![](data:image/png;base64,QUJD) after"
+    equation = {
+        "type": "equation",
+        "page_idx": 0,
+        "text": "",
+        "img_path": "data:image/png;base64,QUJD",
+    }
+
+    result = _with_markdown(monkeypatch, markdown, [equation])
+
+    assert result["markdown"] == "before ![](page_0_img_0) after"
+    assert result["images"][0]["image_base64"] == "QUJD"
+    assert result["formulas"] == []
