@@ -118,6 +118,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   read-only root filesystem. `PYTHON_GIL=0` was removed from the image and the sample
   Compose file; it has no effect on the standard CPython build.
 
+### Build
+
+- A `.dockerignore` keeps the build context to what the Dockerfiles copy (`pyproject.toml`,
+  `uv.lock`, `README.md`, `LICENSE`, `src/`, `deploy/` and `MinerU/`). Builds no longer upload
+  tests, documentation, version-control data, caches or local credentials files to the Docker
+  daemon, and the image contents are unchanged. Markdown is excluded at the top level only,
+  because MinerU's own build reads `MinerU/LICENSE.md`. A test checks every `COPY` source
+  survives the rules, and another builds a context with real Docker and compares it with the
+  rules for every file in the repository.
+
 ### Continuous integration
 
 - A weekly and path-triggered `Security` workflow audits the locked dependencies and the accurate

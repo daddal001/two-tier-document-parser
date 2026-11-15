@@ -1,0 +1,42 @@
+# What is sent to the Docker daemon as the build context. The Dockerfiles in deploy/ copy only
+# pyproject.toml, uv.lock, README.md, LICENSE, src/, deploy/ and MinerU/, so everything else
+# stays out: it makes builds faster (a local CodeQL cache alone is gigabytes) and keeps
+# credentials and development files out of any layer.
+#
+# Markdown is excluded at the top level only. A recursive rule would also remove MinerU/LICENSE.md,
+# which MinerU's own build reads. Patterns match from the context root; * stays in one segment.
+
+# Version control and local tooling
+.git
+.github
+.claude
+.codeql-cache
+.venv
+.mypy_cache
+.pytest_cache
+.coverage
+htmlcov
+.DS_Store
+
+# Build output and run results
+dist
+build
+parser_results
+
+# Local settings that may hold credentials
+.env*
+
+# Python caches, anywhere in the tree
+**/__pycache__
+**/*.pyc
+
+# Not copied by any Dockerfile
+tests
+docs
+examples
+styles
+scripts
+
+# Top-level documents, except the one pyproject.toml names as the package readme
+*.md
+!README.md
