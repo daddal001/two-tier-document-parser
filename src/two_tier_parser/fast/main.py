@@ -35,7 +35,9 @@ from opentelemetry import trace
 from starlette.datastructures import UploadFile
 
 from .. import API_VERSION
+from ..common.http_limits import BodyLimitMiddleware, exceeds, route_path
 from ..common.json_logging import configure_json_logging, safe_log_value
+from ..common.lifecycle import drain_budget, drain_pools
 from .models import HealthResponse, PageRangeParseResponse, ParseResponse
 from .service import parse_pdf, parse_pdf_page_range
 from .storage import (
@@ -165,6 +167,7 @@ def _env_number(name: str, default: Any, kind: Any, minimum: Optional[float] = N
 
 WORKERS = _env_number("WORKERS", _default_workers(), int, minimum=1)
 MAX_TASKS = _env_number("WORKER_MAX_TASKS", 50, int, minimum=1)
+SHUTDOWN_DRAIN_SECONDS = drain_budget()
 
 
 def _new_pool(workers: int) -> ProcessPoolExecutor:
@@ -303,89 +306,22 @@ def _internal_error(message: str, safe_filename: str, exc: Exception) -> HTTPExc
 
 _PARSER_PATHS = {"/parse", "/parse-pages"}
 
-
-def _route_path(scope: Any) -> str:
-    """Return the request path the router sees, without the ASGI ``root_path`` prefix.
-
-    Behind a path-prefixing proxy, servers such as uvicorn (``--root-path``) put the prefix
-    in ``scope["path"]`` and the router strips it again; comparing the raw path would
-    miss ``/parse`` and skip the body limit and admission control.
-    """
-    path = scope["path"]
-    root = (scope.get("root_path") or "").rstrip("/")
-    if root and (path == root or path.startswith(root + "/")):
-        path = path[len(root) :]
-    return path.rstrip("/") or "/"
-
-
-def _exceeds(declared: str, limit: int) -> bool:
-    """Return True when a ``Content-Length`` value is a number above the limit.
-
-    ``str.isdigit`` also accepts characters such as superscript digits that ``int``
-    rejects, so the value must be ASCII as well.
-    """
-    return declared.isascii() and declared.isdigit() and int(declared) > limit
-
-
-class _BodyTooLarge(HTTPException):
-    """Raised from the request stream once the body passes its limit."""
-
-    def __init__(self) -> None:
-        super().__init__(status_code=413, detail=_TOO_LARGE_DETAIL)
-
-
 # A JSON claim-check request is a few hundred bytes; this only stops a stream that never ends.
 _JSON_BODY_LIMIT_BYTES = 1024 * 1024
 
-
-class BodyLimitMiddleware:
-    """Stop oversized request bodies while they stream, before anything is spooled.
-
-    ``Content-Length`` is checked first so an honest oversized request is refused
-    without reading a byte. A chunked request, or one that understates its length,
-    is counted as it arrives and the read is aborted with 413 at the limit, so the
-    multipart parser never writes the rest of the body to temporary storage.
-    """
-
-    def __init__(self, app: Any) -> None:
-        self.app = app
-
-    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
-        if scope["type"] != "http" or scope["method"] != "POST":
-            await self.app(scope, receive, send)
-            return
-        if _route_path(scope) not in _PARSER_PATHS:
-            await self.app(scope, receive, send)
-            return
-
-        headers = {k.lower(): v for k, v in scope["headers"]}
-        multipart = b"multipart/form-data" in headers.get(b"content-type", b"").lower()
-        limit = MAX_PDF_BYTES + _MULTIPART_OVERHEAD_BYTES if multipart else _JSON_BODY_LIMIT_BYTES
-
-        declared = headers.get(b"content-length", b"").decode("latin-1")
-        if _exceeds(declared, limit):
-            await JSONResponse(status_code=413, content={"detail": _TOO_LARGE_DETAIL})(
-                scope, receive, send
-            )
-            return
-
-        received = 0
-
-        async def counting_receive() -> Any:
-            nonlocal received
-            message = await receive()
-            if message["type"] == "http.request":
-                received += len(message.get("body", b""))
-                if received > limit:
-                    raise _BodyTooLarge()
-            return message
-
-        await self.app(scope, counting_receive, send)
+_route_path = route_path
+_exceeds = exceeds
 
 
 # Registered before the admission middleware below, so it sits closer to the routes: the 413 raised
 # from the request stream is then converted to a response by the framework's exception handling.
-app.add_middleware(BodyLimitMiddleware)
+app.add_middleware(
+    BodyLimitMiddleware,
+    paths=_PARSER_PATHS,
+    upload_limit=lambda: MAX_PDF_BYTES + _MULTIPART_OVERHEAD_BYTES,
+    json_limit=lambda: _JSON_BODY_LIMIT_BYTES,
+    detail=_TOO_LARGE_DETAIL,
+)
 
 
 @app.middleware("http")
@@ -488,7 +424,7 @@ NO_GIL = not getattr(sys, "_is_gil_enabled", lambda: True)()
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    """Clean up both process pools on shutdown ."""
+    """Stop both process pools within the drain budget; stuck workers are terminated."""
     logger.info(
         "Shutting down, cleaning up process pools",
         extra={
@@ -498,8 +434,12 @@ async def shutdown_event():
             "pages_executor_workers": PAGES_WORKERS,
         },
     )
-    executor.shutdown(wait=True)
-    pages_executor.shutdown(wait=True)
+    await drain_pools(
+        [executor, pages_executor],
+        budget_s=SHUTDOWN_DRAIN_SECONDS,
+        logger=logger,
+        service_name="fast-parser",
+    )
 
 
 @app.get("/metrics")

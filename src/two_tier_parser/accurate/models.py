@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 class ImageData(BaseModel):
     """Model for extracted images (unified shape — fast + accurate tiers)."""
 
-    image_id: str = Field(..., description="First 16 chars of SHA-256 of image bytes")
+    image_id: str = Field(..., description="Page-based image identifier")
     image_base64: str = Field(..., description="Base64-encoded image bytes")
     page: int = Field(..., description="First page where image appears")
     bbox: Optional[List[float]] = Field(
@@ -49,9 +49,13 @@ class ParsingMetadata(BaseModel):
     pages: int = Field(..., description="Number of pages processed")
     processing_time_ms: int = Field(..., description="Processing time in milliseconds")
     parser: str = Field(..., description="Parser library used")
-    backend: str = Field(..., description="Backend used (transformers/pipeline)")
+    backend: str = Field(
+        ..., description="Legacy path label: vlm when CUDA was available, pipeline otherwise"
+    )
     gpu_used: bool = Field(..., description="Whether GPU was used")
-    accuracy_tier: str = Field(..., description="Accuracy tier (high/very-high)")
+    accuracy_tier: str = Field(
+        ..., description="Legacy backend label (high/very-high); not a measured accuracy score"
+    )
     version: str = Field(..., description="MinerU version")
     filename: str = Field(..., description="Original filename")
 

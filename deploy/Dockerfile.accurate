@@ -1,76 +1,39 @@
-# Accurate Parser Service Dockerfile
-# Based on official MinerU configuration
-# Use v0.10.2 for Tesla T4 (Turing architecture, Compute Capability 7.5)
+# MinerU 4 GPU runtime. The base image supplies the vLLM/CUDA stack expected by
+# the pinned MinerU submodule; CPU-only deployments use Dockerfile.accurate.cpu.
+FROM vllm/vllm-openai:v0.21.0
+# For hosts using CUDA 12.9, replace the line above with:
+# FROM vllm/vllm-openai:v0.21.0-cu129
 
-FROM vllm/vllm-openai:v0.10.2
-
-# Install system dependencies
-RUN apt-get update && \
-    apt-get install -y \
-        fonts-noto-core \
-        fonts-noto-cjk \
-        fontconfig \
-        libgl1 \
-        python3-pip \
-        git \
-        wget \
-        && \
-    fc-cache -fv && \
-    apt-get clean && \
-    rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    fonts-noto-core fonts-noto-cjk fontconfig libgl1 \
+    && fc-cache -f \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
+COPY MinerU /opt/MinerU
+RUN python3 -m pip install -e '/opt/MinerU[torch]' --break-system-packages
 
-# Copy MinerU submodule and install it
-COPY MinerU /tmp/MinerU
-RUN python3 -m pip install -e /tmp/MinerU[core] --break-system-packages
-
-# Copy config file first (needed for model download)
-COPY deploy/magic-pdf.json /root/magic-pdf.json
-
-# Set environment variables for model download
-ENV MINERU_TOOLS_CONFIG_JSON=/root/magic-pdf.json
-ENV MINERU_MODEL_SOURCE=huggingface
-ENV HF_HUB_ENABLE_HF_TRANSFER=1
-
-# Pre-download all MinerU models during build (official MinerU approach)
-# This matches MinerU's official Dockerfiles: docker/global/Dockerfile
-# Models are cached in /root/.cache/huggingface/hub and baked into the image
-# This ensures models are available in all containers, reducing startup complexity
-RUN echo "📦 Pre-downloading MinerU models (this may take 10-20 minutes)..." && \
-    /bin/bash -c "mineru-models-download -s huggingface -m all" && \
-    echo "✅ Models pre-downloaded successfully"
-
-# Copy project files
-COPY pyproject.toml .
+COPY pyproject.toml README.md LICENSE ./
 COPY src/ src/
+RUN python3 -m pip install -e '.[accurate,telemetry,telemetry-sdk]' --break-system-packages \
+    && python3 -m pip cache purge
+
+# Align the prepared repositories and serving backends with MinerU's GPU
+# deployment defaults. The model source switches to local in the entrypoint.
+ENV WORKERS=2 \
+    LOG_LEVEL=INFO \
+    MINERU_MODEL_SMALL_BACKEND=torch \
+    MINERU_MODEL_VLM_ENGINE=vllm \
+    MINERU_DOWNLOAD_MODELS=standard
+
+RUN mineru-kit models download --tier standard --small-backend torch \
+    --vlm-engine vllm --source huggingface
+
 COPY deploy/entrypoint-accurate.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-# Install our package with full telemetry (API + SDK + OTLP exporter for platform tracing)
-# Note: vLLM base image has torch/transformers, but we ensure versions via pyproject.toml or manual
-# We use --break-system-packages because we are in a container
-RUN python3 -m pip install -e ".[accurate,telemetry,telemetry-sdk]" --break-system-packages
-
-# Ensure transformers version meets MinerU requirements and the current
-# security floor used by accurate/requirements.txt.
-# Qwen2VLForConditionalGeneration requires transformers >= 4.51.1
-RUN python3 -m pip install "transformers>=4.53.0,<5.0.0" --break-system-packages
-
-# Set remaining environment variables
-ENV WORKERS=2
-ENV LOG_LEVEL=INFO
-ENV CUDA_VISIBLE_DEVICES=0
-ENV MINERU_VLM_FORMULA_ENABLE=True
-ENV MINERU_VLM_TABLE_ENABLE=True
-ENV MINERU_ENABLE_FORMULA=True
-
-# Expose port
 EXPOSE 8005
-
-# Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8005/health')"
-
-# Override the vLLM base image ENTRYPOINT and use our custom entrypoint
 ENTRYPOINT ["/entrypoint.sh"]

@@ -8,10 +8,7 @@ to provide visibility into GPU/CPU operations without modifying MinerU itself.
 
 Span hierarchy for MinerU operations:
     accurate-parser (service)
-        ├── mineru.load_images (span)
-        ├── mineru.vlm_analyze OR mineru.pipeline_parse (span)
-        ├── mineru.union_make (span)
-        └── mineru.get_crop_img (repeated spans)
+        └── mineru.analyze (span, with selected effort)
 
 See: https://opentelemetry.io/docs/concepts/instrumentation/libraries/
 """
@@ -23,6 +20,7 @@ from typing import Any, Dict, Generator, Optional
 logger = logging.getLogger(__name__)
 
 # Optional OpenTelemetry (graceful fallback)
+tracer: Optional[Any]
 try:
     from opentelemetry import trace
     from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
@@ -41,43 +39,50 @@ except ImportError:
 def setup_telemetry(app) -> bool:
     """Initialize telemetry if available.
 
-    If the SDK is installed (telemetry-sdk extra), configures OTLP export
-    using standard OTEL_* environment variables. Without the SDK, the API
-    stubs remain no-ops (zero overhead).
+    FastAPI instrumentation is enabled when its optional dependencies exist.
+    An SDK/exporter is configured only when OTEL_EXPORTER_OTLP_ENDPOINT or
+    OTEL_EXPORTER_OTLP_TRACES_ENDPOINT is explicit. OTEL_SDK_DISABLED=true
+    disables setup. Without an SDK provider, API spans do not export traces.
 
     Args:
         app: FastAPI application instance
 
     Returns:
-        True if telemetry was enabled, False otherwise
+        True if FastAPI instrumentation was enabled, False otherwise. True
+        does not establish that a collector is reachable or spans were exported.
     """
+    import os
+
+    if os.getenv("OTEL_SDK_DISABLED", "").lower() == "true":
+        return False
     if not OTEL_AVAILABLE:
         return False
 
-    # If the SDK is installed, auto-configure TracerProvider from env vars
-    # (OTEL_EXPORTER_OTLP_ENDPOINT, OTEL_SERVICE_NAME, etc.)
-    try:
-        import os
+    if os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT") or os.getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"):
+        # If the SDK is installed, auto-configure TracerProvider from env vars
+        # (OTEL_EXPORTER_OTLP_ENDPOINT, OTEL_SERVICE_NAME, etc.)
+        try:
+            import os
 
-        from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
-        from opentelemetry.sdk.resources import SERVICE_NAME, Resource
-        from opentelemetry.sdk.trace import TracerProvider
-        from opentelemetry.sdk.trace.export import BatchSpanProcessor
+            from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+            from opentelemetry.sdk.resources import SERVICE_NAME, Resource
+            from opentelemetry.sdk.trace import TracerProvider
+            from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
-        service_name = os.environ.get("OTEL_SERVICE_NAME", "accurate-parser")
-        resource = Resource.create({SERVICE_NAME: service_name})
-        provider = TracerProvider(resource=resource)
-        provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))
-        trace.set_tracer_provider(provider)
-        logger.info(
-            "OpenTelemetry SDK configured with OTLP exporter",
-            extra={"service_name": "accurate-parser", "component": "telemetry"},
-        )
-    except ImportError:
-        logger.debug(
-            "OpenTelemetry SDK not installed - using API-only (no-op) mode",
-            extra={"service_name": "accurate-parser", "component": "telemetry"},
-        )
+            service_name = os.environ.get("OTEL_SERVICE_NAME", "accurate-parser")
+            resource = Resource.create({SERVICE_NAME: service_name})
+            provider = TracerProvider(resource=resource)
+            provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))
+            trace.set_tracer_provider(provider)
+            logger.info(
+                "OpenTelemetry SDK configured with OTLP exporter",
+                extra={"service_name": "accurate-parser", "component": "telemetry"},
+            )
+        except ImportError:
+            logger.debug(
+                "OpenTelemetry SDK not installed - using API-only (no-op) mode",
+                extra={"service_name": "accurate-parser", "component": "telemetry"},
+            )
 
     FastAPIInstrumentor.instrument_app(app)
     logger.info(
@@ -103,24 +108,21 @@ def traced_operation(
     modifying MinerU itself.
 
     Args:
-        name: Span name (e.g., "mineru.vlm_analyze", "mineru.load_images")
+        name: Span name (e.g., "mineru.analyze")
         attributes: Optional span attributes for context
 
     Yields:
         Span object if available, None otherwise
 
     Example:
-        with traced_operation("mineru.vlm_analyze", {"backend": "transformers"}) as span:
-            middle_json, infer_result = vlm_doc_analyze(pdf_bytes, ...)
+        with traced_operation("mineru.analyze", {"effort": "high"}) as span:
+            middle_json, infer_result = doc_analyze(file_bytes, effort="high")
             if span:
                 span.set_attribute("pages", len(middle_json.get("pdf_info", [])))
 
-    Key MinerU operations to wrap:
-        - mineru.load_images: PDF to PIL images (~1s)
-        - mineru.vlm_analyze: GPU VLM analysis (10-30s/page)
-        - mineru.pipeline_parse: CPU fallback (5-15s/page)
-        - mineru.union_make: Markdown generation (~1s)
-        - mineru.get_crop_img: Image cropping (~0.1s/image)
+    The service wraps MinerU's in-memory analysis call. MinerU owns selection of
+    the installed VLM engine and the medium/high model effort. Span durations
+    are measured at runtime; they are not fixed per-page budgets.
     """
     if tracer:
         with tracer.start_as_current_span(name) as span:
