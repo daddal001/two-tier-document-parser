@@ -144,3 +144,11 @@ def test_the_fast_image_leaves_the_installer_out_of_the_final_layer():
     assert removal, "pip and its vendored libraries are reported by every image scanner"
     assert removal[0] > install  # after everything that needs it
     assert all(name in lines[removal[0]] for name in ("pip", "setuptools"))
+
+
+def test_fast_image_installs_the_redis_client_for_cancellation():
+    """Cancellation turns on with REDIS_URL; the image must hold the client it needs."""
+    dockerfile = (ROOT / "deploy" / "Dockerfile.fast").read_text(encoding="utf-8")
+
+    assert "--extra cancellation" in dockerfile  # the pins come from uv.lock
+    assert '".[fast,cancellation,telemetry,telemetry-sdk]"' in dockerfile

@@ -9,7 +9,7 @@ RUN pip install --no-cache-dir uv==0.13.0
 WORKDIR /build
 COPY pyproject.toml uv.lock ./
 RUN uv export --frozen --no-hashes --no-emit-project \
-        --extra fast --extra telemetry --extra telemetry-sdk \
+        --extra fast --extra cancellation --extra telemetry --extra telemetry-sdk \
         -o constraints.txt
 
 # Stage 2: runtime image
@@ -31,7 +31,7 @@ COPY src/ src/
 # Install the package with API + SDK + OTLP exporter; traces are exported only when
 # OTEL_EXPORTER_OTLP_ENDPOINT is set.
 RUN pip install --no-cache-dir --upgrade pip==26.2.2 && \
-    pip install --no-cache-dir -c /tmp/constraints.txt ".[fast,telemetry,telemetry-sdk]"
+    pip install --no-cache-dir -c /tmp/constraints.txt ".[fast,cancellation,telemetry,telemetry-sdk]"
 
 # Nothing installs packages at run time, so the installer, setuptools and their vendored
 # libraries (which image scanners report separately from the service's own pins) stay out of the

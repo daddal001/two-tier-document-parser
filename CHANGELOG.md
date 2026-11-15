@@ -113,6 +113,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unset or empty, the service logs a startup warning (`component: security`) saying that any
   caller who can reach it can have it read any PDF in any bucket its credentials may read;
   setting it to a list or to `*` silences it. A service with no object store says nothing.
+- The image includes the Redis client (the `cancellation` extra), so cancellation works when
+  `REDIS_URL` (or `CELERY_BROKER_URL`) is set. With neither set, nothing imports or contacts Redis,
+  and behavior is unchanged.
 - `LOG_FORMAT=text` and `SERVICE_NAME` for local readability and log attribution.
 - The image installs exactly the versions in `uv.lock`, runs as user 1000 and works with a
   read-only root filesystem. `PYTHON_GIL=0` was removed from the image and the sample
