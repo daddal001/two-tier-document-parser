@@ -118,6 +118,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   read-only root filesystem. `PYTHON_GIL=0` was removed from the image and the sample
   Compose file; it has no effect on the standard CPython build.
 
+### Continuous integration
+
+- A weekly and path-triggered `Security` workflow audits the locked dependencies and the accurate
+  image's pinned set with pip-audit, runs Semgrep (Python, FastAPI, Dockerfile, GitHub Actions
+  and secrets rules) over the code, and scans the fast image with Trivy for fixable high and
+  critical findings. None is a required check. An `Accurate image` workflow builds the CPU image
+  and runs the container tests against it (unprivileged, no home, capabilities dropped, a real
+  MinerU parse), weekly and when something that reaches the image changes.
+- The CodeQL workflow's actions are pinned to a commit like the others, its checkout no longer
+  persists credentials, and a test fails the build if any workflow uses a movable reference,
+  omits permissions or a timeout, or leaves credentials behind.
+
 ### Fast parser: upgrade notes
 
 Before deploying, check that:

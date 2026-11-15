@@ -1,0 +1,58 @@
+name: Accurate image
+
+# Builds the CPU image of the accurate parser and runs it under the constraints its pod applies:
+# unprivileged, no home directory, capabilities dropped. It downloads the model weights (several
+# gigabytes) and runs a real MinerU parse, so it runs weekly and when something that reaches the
+# image changes. The GPU image cannot be tested here; the Colab notebook covers that stack.
+on:
+  schedule:
+    - cron: '43 5 * * 1'
+  push:
+    branches: [main]
+    paths:
+      - 'deploy/Dockerfile.accurate.cpu'
+      - 'deploy/entrypoint-accurate.sh'
+      - 'deploy/constraints/**'
+      - 'src/two_tier_parser/accurate/**'
+      - 'src/two_tier_parser/common/**'
+      - 'MinerU'
+      - 'tests/container/**'
+      - '.github/workflows/accurate-image.yml'
+  pull_request:
+    paths:
+      - 'deploy/Dockerfile.accurate.cpu'
+      - 'deploy/entrypoint-accurate.sh'
+      - 'deploy/constraints/**'
+      - 'src/two_tier_parser/accurate/**'
+      - 'src/two_tier_parser/common/**'
+      - 'MinerU'
+      - 'tests/container/**'
+      - '.github/workflows/accurate-image.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  cpu:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          submodules: recursive
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - run: uv sync --frozen --extra fast --extra dev
+      - name: Build the image and run the tests against it
+        run: uv run --frozen --no-sync pytest tests/container/test_accurate_cpu_image.py -m "container and models" --run-models -v -p no:cacheprovider
