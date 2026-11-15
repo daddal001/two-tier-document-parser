@@ -3,6 +3,7 @@
 Keep upstream imports lazy so API and contract checks run without model weights.
 """
 
+import re
 from typing import Any, Iterator
 
 
@@ -29,6 +30,7 @@ def analyze(pdf_bytes: bytes, *, use_vlm: bool) -> dict[str, Any]:
     images: list[dict[str, Any]] = []
     tables: list[dict[str, Any]] = []
     formulas: list[dict[str, Any]] = []
+    image_ids: dict[str, str] = {}
     for item in blocks:
         kind = item.get("type")
         page = item.get("page_idx", 0)
@@ -37,15 +39,17 @@ def analyze(pdf_bytes: bytes, *, use_vlm: bool) -> dict[str, Any]:
             # MinerU 4 puts the image in the item itself as a data URI. Pairing with the
             # ordered payload list is only the fallback for an item that carries no source.
             source = item.get("img_path") or item.get("content") or ""
-            image_base64 = _raw_base64(source or (payloads.pop(0) if payloads else ""))
-            images.append(
-                {
-                    "image_id": f"page_{page}_img_{len(images)}",
-                    "image_base64": image_base64,
-                    "page": page,
-                    "bbox": bbox,
-                }
+            _add_image(
+                images,
+                image_ids,
+                _raw_base64(source or (payloads.pop(0) if payloads else "")),
+                page,
+                bbox,
             )
+        elif kind == "chart":
+            # a chart's own picture; its content is embedded text, not an image payload
+            if item.get("img_path"):
+                _add_image(images, image_ids, _raw_base64(item["img_path"]), page, bbox)
         elif kind == "table":
             content = item.get("table_body") or ""
             if content:
@@ -57,8 +61,14 @@ def analyze(pdf_bytes: bytes, *, use_vlm: bool) -> dict[str, Any]:
                         "bbox": bbox,
                     }
                 )
+            elif item.get("img_path"):
+                # a table MinerU could not recognize is rendered as its picture
+                _add_image(images, image_ids, _raw_base64(item["img_path"]), page, bbox)
         elif kind == "equation":
             content = item.get("text") or ""
+            if not content and item.get("img_path"):
+                # an equation MinerU could not recognize is rendered as its picture
+                _add_image(images, image_ids, _raw_base64(item["img_path"]), page, bbox)
             if content:
                 formulas.append(
                     {
@@ -70,12 +80,38 @@ def analyze(pdf_bytes: bytes, *, use_vlm: bool) -> dict[str, Any]:
                 )
 
     return {
-        "markdown": render_markdown(middle_json),
+        "markdown": _reference_images(render_markdown(middle_json), image_ids),
         "images": images,
         "tables": tables,
         "formulas": formulas,
         "pages": len(middle_json.pages),
     }
+
+
+def _add_image(
+    images: list[dict[str, Any]],
+    image_ids: dict[str, str],
+    image_base64: str,
+    page: int,
+    bbox: list[float],
+) -> None:
+    image_id = f"page_{page}_img_{len(images)}"
+    image_ids.setdefault(image_base64, image_id)
+    images.append({"image_id": image_id, "image_base64": image_base64, "page": page, "bbox": bbox})
+
+
+_INLINE_IMAGE = re.compile(r"data:image/[\w.+-]+;base64,([A-Za-z0-9+/=]+)")
+
+
+def _reference_images(markdown: str, image_ids: dict[str, str]) -> str:
+    """Replace the base64 images MinerU 4 inlines in Markdown with their ``image_id``.
+
+    Each picture is returned once, in ``images``; embedding it again in the Markdown made
+    an 11 page response over a thousand times larger. Images are matched by content, so
+    the ids stay right whatever order the Markdown shows them in. A payload with no entry
+    in ``images`` stays embedded: it is the only copy, and dropping it would lose content.
+    """
+    return _INLINE_IMAGE.sub(lambda m: image_ids.get(m.group(1), m.group(0)), markdown)
 
 
 def _image_payloads(value: Any) -> Iterator[str]:
