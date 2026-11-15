@@ -311,12 +311,15 @@ def check_connectivity(timeout_seconds: float = 1.0) -> bool:
             total deadline for DNS, connection setup, and response handling.
 
     Returns:
-        True if listing buckets succeeds; False if no store is configured or the
-        probe raises an exception.
+        True if listing buckets succeeds, or if the store answers "access denied" (it is
+        reachable and has authenticated the caller; listing every bucket is a broader
+        permission than reading objects, which is all this service needs). False if no store
+        is configured, the store cannot be reached, or it rejects the credentials or fails.
     """
     if not storage_configured():
         return False
     from minio import Minio
+    from minio.error import S3Error
 
     settings = load_settings()
     http_client = PoolManager(
@@ -334,6 +337,8 @@ def check_connectivity(timeout_seconds: float = 1.0) -> bool:
         )
         client.list_buckets()
         return True
+    except S3Error as error:
+        return error.code == "AccessDenied"
     except Exception:
         return False
     finally:

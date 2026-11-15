@@ -180,18 +180,23 @@ def read_only_user(object_store, stored_sample, tmp_path_factory):
     return "reader", "reader-secret-1"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="the health probe lists every bucket, so credentials that may only read objects "
-    "report degraded; fixed with the Step 3 health change",
-)
-def test_health_with_read_only_credentials(fast_image, network, object_store, read_only_user):
+def test_read_only_credentials_are_healthy_and_can_read(
+    fast_image, network, object_store, read_only_user, stored_sample
+):
+    """Listing every bucket and reading one object are different permissions; only the second is
+    needed, so a credential that has it must not be reported as a degraded store."""
     env = {**store_env(object_store, *read_only_user), "OBJECT_STORE_REGION": REGION}
     with run_pod(fast_image, env=env, network=network) as service:
         _, _, health = service.json("GET", "/health")
         assert health["storage_configured"] is True
+        assert health["minio_connected"] is True
         assert health["status"] == "healthy"
+
+        bucket, key = stored_sample
+        status, _, body = service.post_json(
+            "/parse", {"bucket": bucket, "key": key, "filename": "sample.pdf"}
+        )
+        assert status == 200 and body["markdown"]  # and the read itself works with it
 
 
 def test_responses_match_the_baseline_image(standalone, sample_pdf):

@@ -256,12 +256,44 @@ _TOO_LARGE_DETAIL = "File too large (max 100MB)"
 def _allowed_buckets() -> Optional[set]:
     """Return the claim-check bucket allow-list, or None when unrestricted.
 
-    PARSER_ALLOWED_BUCKETS is a comma-separated list. Unset or empty keeps the
-    default behavior of reading from any bucket the configured credentials can reach.
+    PARSER_ALLOWED_BUCKETS is a comma-separated list of bucket names. A ``*`` in the list is
+    the explicit way to allow every bucket the configured credentials can reach. Unset or
+    empty does the same, but is what the startup warning below is about: it should be a choice,
+    not a default nobody noticed.
     """
     raw = os.getenv("PARSER_ALLOWED_BUCKETS", "")
     names = {name.strip() for name in raw.split(",") if name.strip()}
+    if "*" in names:
+        return None
     return names or None
+
+
+def _warn_if_unrestricted() -> None:
+    """Say at startup that claim-check reads can reach every bucket the credentials can.
+
+    The service has no authentication of its own, and a claim-check request names the bucket and
+    key to read, so anyone who can reach it can have it read, and return the text of, any PDF
+    in any bucket its credentials may read. A service with no object store has nothing to
+    restrict and stays quiet; so does one that was told, in either direction, what to allow.
+    """
+    if not storage_configured() or os.getenv("PARSER_ALLOWED_BUCKETS", "").strip(" ,"):
+        return
+    logger.warning(
+        "Claim-check reads are not restricted to specific buckets",
+        extra={
+            "service_name": "fast-parser",
+            "component": "security",
+            "setting": "PARSER_ALLOWED_BUCKETS",
+            "remedy": "Set PARSER_ALLOWED_BUCKETS to the buckets this service should read, "
+            "or to * to allow all of them on purpose and silence this warning.",
+        },
+    )
+
+
+@app.on_event("startup")
+async def startup_event() -> None:
+    """Log configuration the operator should have chosen on purpose."""
+    _warn_if_unrestricted()
 
 
 def _internal_error(message: str, safe_filename: str, exc: Exception) -> HTTPException:

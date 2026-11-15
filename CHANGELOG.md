@@ -90,12 +90,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Pool workers started with `spawn` or `forkserver` set up tracing as the parent does, so their
   spans are exported (forked workers, the default on Linux, already did).
 
+- `/health` treats an object store that answers "access denied" to the bucket listing as
+  reachable. The probe lists buckets, which is a broader permission than reading objects, so a
+  credential that can read what the service needs was reported as `degraded`. A store that
+  cannot be reached, rejects the credentials, or fails is still `degraded`.
+
 ### Fast parser: additions that change nothing by default
 
 - `OBJECT_STORE_*` settings (endpoint, access key, secret key, TLS, region) for any
   S3-compatible store. The `MINIO_*` names remain fallbacks.
 - `PARSER_ALLOWED_BUCKETS` restricts claim-check reads to a comma-separated bucket list
-  (403 otherwise). Unset keeps the current behavior.
+  (403 otherwise). Unset keeps the current behavior, and a `*` in the list says so on purpose
+  (every bucket the credentials can read). With an object store configured and the setting
+  unset or empty, the service logs a startup warning (`component: security`) saying that any
+  caller who can reach it can have it read any PDF in any bucket its credentials may read;
+  setting it to a list or to `*` silences it. A service with no object store says nothing.
 - `LOG_FORMAT=text` and `SERVICE_NAME` for local readability and log attribution.
 - The image installs exactly the versions in `uv.lock`, runs as user 1000 and works with a
   read-only root filesystem. `PYTHON_GIL=0` was removed from the image and the sample
@@ -134,6 +143,12 @@ Before deploying, check that:
     after at most 100 seconds (the 502 callers already retry).
 17. Shutdown: keep the platform's termination grace period longer than
     `UVICORN_TIMEOUT_GRACEFUL_SHUTDOWN` plus `SHUTDOWN_DRAIN_SECONDS`.
+
+18. Decide `PARSER_ALLOWED_BUCKETS` for every deployment that has an object store: list the
+    buckets it should read, or `*` to allow all of them on purpose. The startup warning stays
+    until you do. The default is unchanged in this release; refusing claim-check reads when it
+    is unset is a separate, later decision because it would reject every request from a
+    deployment that has not set it.
 
 ### Accurate parser: changes callers can observe
 
