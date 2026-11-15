@@ -62,22 +62,13 @@ def setup_telemetry(app) -> bool:
         # If the SDK is installed, auto-configure TracerProvider from env vars
         # (OTEL_EXPORTER_OTLP_ENDPOINT, OTEL_SERVICE_NAME, etc.)
         try:
-            import os
+            from ...common.tracing import configure_tracer_provider
 
-            from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
-            from opentelemetry.sdk.resources import SERVICE_NAME, Resource
-            from opentelemetry.sdk.trace import TracerProvider
-            from opentelemetry.sdk.trace.export import BatchSpanProcessor
-
-            service_name = os.environ.get("OTEL_SERVICE_NAME", "accurate-parser")
-            resource = Resource.create({SERVICE_NAME: service_name})
-            provider = TracerProvider(resource=resource)
-            provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))
-            trace.set_tracer_provider(provider)
-            logger.info(
-                "OpenTelemetry SDK configured with OTLP exporter",
-                extra={"service_name": "accurate-parser", "component": "telemetry"},
-            )
+            if configure_tracer_provider("accurate-parser") is not None:
+                logger.info(
+                    "OpenTelemetry SDK configured with OTLP exporter",
+                    extra={"service_name": "accurate-parser", "component": "telemetry"},
+                )
         except ImportError:
             logger.debug(
                 "OpenTelemetry SDK not installed - using API-only (no-op) mode",

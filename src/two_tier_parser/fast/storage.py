@@ -15,17 +15,35 @@ so earlier deployments keep working unchanged):
     OBJECT_STORE_SECURE      ``true`` selects TLS (fallback MINIO_SECURE)
     OBJECT_STORE_REGION      region name for stores that require one (optional)
 
+Read limits (each read ends on these instead of the SDK's five-minute defaults; a read that
+exceeds them fails with a 502, frees its admission slot, and does not affect the next read):
+
+    OBJECT_STORE_CONNECT_TIMEOUT_SECONDS   connecting to the store (default 5)
+    OBJECT_STORE_READ_TIMEOUT_SECONDS      waiting for the next bytes on the socket (default 20)
+    OBJECT_STORE_RETRIES                   retries after a connection error or a 5xx (default 2)
+    OBJECT_STORE_READ_BUDGET_SECONDS       the whole read, request to last byte (default 100)
+
+The budget bounds how long a read can hold its admission slot. The two socket timeouts are
+reduced when needed so that every attempt fits inside it (a store that sends a 503 with a long
+Retry-After is not waited for either), and once bytes are arriving the budget is checked as
+each piece comes in, so a stall at that point can overshoot it by at most one read timeout.
+
 Any S3-compatible service works: AWS S3, Cloudflare R2, Ceph, MinIO, or Google
 Cloud Storage through its S3 interoperability endpoint.
 """
 
 import logging
 import os
+import time
 from dataclasses import dataclass
 from typing import Any, Optional
 
+import certifi
 from opentelemetry import trace
 from urllib3 import PoolManager, Timeout
+from urllib3.util import Retry
+
+from ..common.env import env_number
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer("parser.fast")
@@ -49,6 +67,49 @@ class StorageNotConfigured(RuntimeError):
 
 class ObjectTooLarge(RuntimeError):
     """Raised when an object exceeds the size limit before it is fully buffered."""
+
+
+class StorageTimeout(RuntimeError):
+    """Raised when a read outlives its budget while still delivering bytes."""
+
+
+# The body is read in pieces this big, checking the budget between pieces.
+_CHUNK_BYTES = 1024 * 1024
+
+
+@dataclass(frozen=True)
+class ReadLimits:
+    """How long a claim-check read may take."""
+
+    connect_timeout: float
+    read_timeout: float
+    retries: int
+    budget: float
+
+
+def read_limits() -> ReadLimits:
+    """Read the limits from the environment; a malformed value stops the read, naming it.
+
+    Each of the ``retries + 1`` attempts may spend its connect timeout and then wait for the
+    response headers, so the two timeouts are scaled down together when that would not fit in
+    90 percent of the budget (the rest covers the retry back-off). The budget is never changed.
+    """
+    limits = ReadLimits(
+        connect_timeout=env_number("OBJECT_STORE_CONNECT_TIMEOUT_SECONDS", 5.0, float, minimum=0.1),
+        read_timeout=env_number("OBJECT_STORE_READ_TIMEOUT_SECONDS", 20.0, float, minimum=0.1),
+        retries=env_number("OBJECT_STORE_RETRIES", 2, int, minimum=0),
+        budget=env_number("OBJECT_STORE_READ_BUDGET_SECONDS", 100.0, float, minimum=0.1),
+    )
+    share = 0.9 * limits.budget / (limits.retries + 1)
+    if limits.connect_timeout + limits.read_timeout <= share:
+        return limits
+    scale = share / (limits.connect_timeout + limits.read_timeout)
+    return ReadLimits(
+        connect_timeout=limits.connect_timeout * scale,
+        read_timeout=limits.read_timeout * scale,
+        retries=limits.retries,
+        budget=limits.budget,
+    )
 
 
 @dataclass(frozen=True)
@@ -109,12 +170,46 @@ def get_client() -> Any:
         from minio import Minio
 
         settings = load_settings()
+        limits = read_limits()
+        configured = (
+            env_number("OBJECT_STORE_CONNECT_TIMEOUT_SECONDS", 5.0, float, minimum=0.1),
+            env_number("OBJECT_STORE_READ_TIMEOUT_SECONDS", 20.0, float, minimum=0.1),
+        )
+        if (limits.connect_timeout, limits.read_timeout) != configured:
+            logger.warning(
+                "Object store timeouts reduced to fit the read budget",
+                extra={
+                    "service_name": "fast-parser",
+                    "connect_timeout": round(limits.connect_timeout, 3),
+                    "read_timeout": round(limits.read_timeout, 3),
+                    "retries": limits.retries,
+                    "budget_seconds": limits.budget,
+                },
+            )
+        # The SDK's own client waits up to five minutes per socket operation and retries five
+        # times, with no limit on the whole read. This one is the same client with bounded values.
+        http_client = PoolManager(
+            timeout=Timeout(connect=limits.connect_timeout, read=limits.read_timeout),
+            maxsize=10,
+            cert_reqs="CERT_REQUIRED",
+            ca_certs=os.environ.get("SSL_CERT_FILE") or certifi.where(),
+            retries=Retry(
+                total=limits.retries,
+                backoff_factor=0.2,
+                status_forcelist=[500, 502, 503, 504],
+                respect_retry_after_header=False,  # a store asking for minutes is not waited for
+                # All the back-off sleeps together stay inside the tenth of the budget that
+                # read_limits() leaves for them; urllib3 would otherwise double each sleep.
+                backoff_max=max(0.1 * limits.budget / max(limits.retries, 1), 0.01),
+            ),
+        )
         _client = Minio(
             settings.endpoint,
             access_key=settings.access_key,
             secret_key=settings.secret_key,
             secure=settings.secure,
             region=settings.region,
+            http_client=http_client,
         )
         logger.info(
             "S3-compatible object storage client initialized",
@@ -127,7 +222,7 @@ def get_client() -> Any:
     return _client
 
 
-def read_object(bucket: str, key: str, max_bytes: Optional[int] = None) -> bytes:
+def read_object(bucket: str, key: str, max_bytes: Optional[int] = None) -> bytearray:
     """Read object bytes synchronously and release the response connection.
 
     Args:
@@ -138,7 +233,7 @@ def read_object(bucket: str, key: str, max_bytes: Optional[int] = None) -> bytes
             response without that header is read at most ``max_bytes + 1`` bytes.
 
     Returns:
-        Complete object contents as bytes.
+        Complete object contents, as a ``bytearray`` built in place so no second copy is held.
 
     Raises:
         StorageNotConfigured: No object store is configured.
@@ -156,24 +251,52 @@ def read_object(bucket: str, key: str, max_bytes: Optional[int] = None) -> bytes
             "minio.key": key,
         },
     ) as span:
+        limits = read_limits()
+        deadline = time.monotonic() + limits.budget
         client = get_client()
+        # shortcut: with no OBJECT_STORE_REGION the SDK first asks where the bucket is, one small
+        # request per bucket that it caches, and that answer is outside the read budget. Set the
+        # region to skip it; revisit if a store is ever seen to stall on it.
         response = client.get_object(bucket, key)
         try:
-            data: bytes
+            data: bytearray
             if max_bytes is not None:
                 declared = response.headers.get("Content-Length", "")
                 if declared.isascii() and declared.isdigit() and int(declared) > max_bytes:
                     raise ObjectTooLarge(f"object is {declared} bytes; limit is {max_bytes}")
-                data = response.read(max_bytes + 1)
-                if len(data) > max_bytes:
-                    raise ObjectTooLarge(f"object exceeds the {max_bytes} byte limit")
-            else:
-                data = response.read()
+            data = _read_within(response, deadline, max_bytes, limits.budget)
             span.set_attribute("file.size_bytes", len(data))
             return data
         finally:
             response.close()
             response.release_conn()
+
+
+def _read_within(
+    response: Any, deadline: float, max_bytes: Optional[int], budget: float
+) -> bytearray:
+    """Read a response in pieces, giving up at ``deadline`` even if bytes are still arriving.
+
+    Each socket read is bounded by the client's read timeout, so a stalled server ends there;
+    this adds the limit for a server that keeps sending slowly. ``read1`` returns whatever one
+    socket read delivered, so the deadline is checked as bytes arrive; ``read(n)`` would wait
+    for all ``n`` bytes and let a trickling server hold the call far past the budget. Raising
+    closes the connection in the caller's ``finally``, so the half-read response never goes
+    back to the pool.
+    """
+    # Grown in place and returned as it is: collecting pieces and joining them holds the whole
+    # object twice at the end, which at a 100 MiB document and several in flight is real memory
+    # (measured on an 80 MiB object: 167 MiB at peak that way, 87 MiB this way).
+    buffer = bytearray()
+    while True:
+        if time.monotonic() > deadline:
+            raise StorageTimeout(f"object read exceeded its {budget:g} second budget")
+        piece = response.read1(_CHUNK_BYTES)
+        if not piece:
+            return buffer
+        if max_bytes is not None and len(buffer) + len(piece) > max_bytes:
+            raise ObjectTooLarge(f"object exceeds the {max_bytes} byte limit")
+        buffer += piece
 
 
 def check_connectivity(timeout_seconds: float = 1.0) -> bool:

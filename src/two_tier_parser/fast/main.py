@@ -27,7 +27,7 @@ import time
 import uuid
 from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
-from typing import Any, Optional
+from typing import Any, Optional, Union
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, Response
@@ -39,6 +39,7 @@ from ..common.env import env_number
 from ..common.http_limits import BodyLimitMiddleware, exceeds, route_path
 from ..common.json_logging import configure_json_logging, safe_log_value
 from ..common.lifecycle import drain_budget, drain_pools
+from ..common.worker import init_worker, run_safely
 from .models import HealthResponse, PageRangeParseResponse, ParseResponse
 from .service import parse_pdf, parse_pdf_page_range
 from .storage import (
@@ -157,15 +158,15 @@ def _new_pool(workers: int) -> ProcessPoolExecutor:
     """Create a parser pool whose workers log like the parent process.
 
     Workers started with ``spawn`` or ``forkserver`` do not inherit the parent's
-    logging configuration, so each one applies the same environment-driven setup
-    when it starts. The initializer lives in a light module so a worker does not
-    import this application. Replacement pools use the same helper.
+    logging configuration or tracer provider, so each one applies the same
+    environment-driven setup when it starts. The initializer lives in a light module
+    so a worker does not import this application. Replacement pools use the same helper.
     """
     return ProcessPoolExecutor(
         max_workers=workers,
         max_tasks_per_child=MAX_TASKS,
-        initializer=configure_json_logging,
-        initargs=(None, "fast-parser"),
+        initializer=init_worker,
+        initargs=("fast-parser",),
     )
 
 
@@ -493,6 +494,16 @@ def _sanitize_filename(filename: str) -> str:
     return safe_name
 
 
+# The most a request may ask for. A request with no limit of its own gets the defaults below, and
+# one asking for more than a ceiling gets the ceiling. The defaults sit at or above the largest
+# budgets callers are known to send for previews (100,000 images, ten times a 100 MiB PDF, and
+# 10^10 pixels), so they stop absurd values without changing a real request; lower them with
+# these settings to fit the memory of the container.
+IMAGE_MAX_COUNT_CEILING = env_number("IMAGE_MAX_COUNT_CEILING", 100_000, int, minimum=0)
+IMAGE_MAX_BYTES_CEILING = env_number("IMAGE_MAX_BYTES_CEILING", 1_100_000_000, int, minimum=0)
+IMAGE_MAX_PIXELS_CEILING = env_number("IMAGE_MAX_PIXELS_CEILING", 10_000_000_000, int, minimum=0)
+
+
 def _image_opts_from_payload(payload: dict, *, stage1: bool = False) -> dict:
     """Extract image-extraction options from a JSON request payload.
 
@@ -521,9 +532,9 @@ def _image_opts_from_payload(payload: dict, *, stage1: bool = False) -> dict:
 
     return {
         "extract_images_flag": bool(extract),
-        "image_max_count": max(0, max_count),
-        "image_max_bytes": max(0, max_bytes),
-        "image_max_pixels": max(0, max_pixels),
+        "image_max_count": min(max(0, max_count), IMAGE_MAX_COUNT_CEILING),
+        "image_max_bytes": min(max(0, max_bytes), IMAGE_MAX_BYTES_CEILING),
+        "image_max_pixels": min(max(0, max_pixels), IMAGE_MAX_PIXELS_CEILING),
     }
 
 
@@ -531,7 +542,7 @@ async def _read_pdf_from_request(
     request: Request,
     *,
     stage1: bool = False,
-) -> tuple[bytes, str, str, Optional[str], int, dict]:
+) -> tuple[Union[bytes, bytearray], str, str, Optional[str], int, dict]:
     """Extract PDF bytes and filename from either JSON (claim-check) or multipart request.
 
     Returns:
@@ -599,6 +610,7 @@ async def _read_pdf_from_request(
             },
         )
 
+        pdf_bytes: Union[bytes, bytearray]
         try:
             pdf_bytes = await asyncio.to_thread(read_object, bucket, key, MAX_PDF_BYTES)
         except ObjectTooLarge:
@@ -795,6 +807,7 @@ async def parse(request: Request) -> ParseResponse:
             active_executor = executor
             result = await loop.run_in_executor(
                 active_executor,
+                run_safely,
                 parse_pdf,
                 pdf_bytes,
                 safe_filename,  # SECURITY: Use sanitized filename
@@ -973,6 +986,7 @@ async def parse_pages(
             active_executor = pages_executor
             future = loop.run_in_executor(
                 active_executor,
+                run_safely,
                 parse_pdf_page_range,
                 pdf_bytes,
                 safe_filename,  # SECURITY: Use sanitized filename

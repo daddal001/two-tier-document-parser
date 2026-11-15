@@ -506,3 +506,20 @@ def test_range_image_records_keep_every_documented_key_even_when_null(client, mo
     assert len(body["images"]) == 1
     assert set(body["images"][0]) == IMAGE_KEYS
     assert body["images"][0]["bbox"] is None
+
+
+@pytest.mark.parametrize("path", ["/parse", "/parse-pages"])
+def test_a_storage_timeout_is_502_and_frees_its_admission_slot(client, monkeypatch, path):
+    from two_tier_parser.fast.storage import StorageTimeout
+
+    def too_slow(*_args):
+        raise StorageTimeout("object read exceeded its 120 second budget")
+
+    monkeypatch.setenv("OBJECT_STORE_ENDPOINT", "store.invalid")
+    monkeypatch.setattr(fast_main, "read_object", too_slow)
+
+    response = client.post(path, json={"bucket": "b", "key": "k.pdf", "filename": "k.pdf"})
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == "Failed to read file from storage: StorageTimeout"
+    assert fast_main._inflight_documents == 0  # a stalled read no longer occupies a slot

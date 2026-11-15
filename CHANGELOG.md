@@ -43,6 +43,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (seconds) to bound that wait too, and keep the platform's termination grace period longer
   than both settings together.
 
+- `POST /parse-pages` recovers a damaged page the way `/parse` does: the range is converted
+  page by page, the page becomes a placeholder, and the response is 200 with
+  `metadata.skipped_pages` (one-based, relative to the document) and `metadata.warning`.
+  It used to answer 500 for a document that `/parse` handled. `metadata.images_truncated` is
+  now returned by this route too ("count", "bytes" or "pixels"), so a caller can tell "no
+  images" from "images left out by a limit". A response that needs none of these has exactly
+  the keys it had before.
+- Every 503 carries `Retry-After: 2`; the two pool-saturation responses (`parse_pool_saturated`,
+  `parse_pages_pool_saturated`) used to omit it.
+- A cancelled parse (409) hands back the pages it finished. The detail keeps `reason`,
+  `last_page_parsed`, `pages_total` and `markdown_prefix_length`, and adds `start_page`,
+  `markdown_prefix` and `images` (the Markdown and images of the pages from `start_page` to
+  `last_page_parsed`), plus `skipped_pages` and `images_truncated` when they apply. Appending
+  the response of a resume that starts at `last_page_parsed + 1` to the prefix gives the whole
+  document with every page and image exactly once. Cancellation needs `REDIS_URL` or
+  `CELERY_BROKER_URL`; without one it never fires, which is how the service behaves unless a
+  deployment configures it. A caller must keep the prefix and append the resumed response to
+  it before enabling cancellation, because the resumed response covers only the pages after the
+  cursor.
+- Reads from the object store end on a budget. The connect timeout is 5 s
+  (`OBJECT_STORE_CONNECT_TIMEOUT_SECONDS`), the socket read timeout 20 s
+  (`OBJECT_STORE_READ_TIMEOUT_SECONDS`), retries 2 (`OBJECT_STORE_RETRIES`) and the whole read
+  100 s (`OBJECT_STORE_READ_BUDGET_SECONDS`); the SDK's defaults were 300 s per operation and
+  five retries with no limit on the whole. The two timeouts are reduced when needed so that
+  every attempt fits inside the budget, and a store's `Retry-After` is not waited for. Once
+  bytes are arriving the budget is checked as each piece comes in, so a stall at that point can
+  overshoot it by one read timeout. A read over its limits is the same 502 as other storage
+  failures and frees its admission slot, so a few slow transfers can no longer occupy the
+  allowance and turn away direct uploads. The object is read into one buffer in place, which
+  halves the peak memory of a large read (measured: 87 MiB instead of 167 MiB for 80 MiB).
+- A request can no longer ask for an unbounded image budget. Requests are clamped to
+  `IMAGE_MAX_COUNT_CEILING` (default 100,000), `IMAGE_MAX_BYTES_CEILING` (1,100,000,000) and
+  `IMAGE_MAX_PIXELS_CEILING` (10,000,000,000), which sit at or above the largest budgets known
+  callers send, so a real request is unchanged. An image larger than the pixel limit is refused
+  before it is decoded, and an image object used on many pages is extracted once.
+- A failure inside a worker that cannot be rebuilt in the parent no longer breaks the pool. It
+  used to turn that request and every later one into a 503 and a pool replacement; it is now a
+  500 with a correlation id and the next request runs on the same pool.
+- A task-aware parse stops asking Redis for a cancel flag for 30 seconds after a failed check,
+  instead of paying the one-second client timeout before every page.
+- `FAST_PARSER_WALL_DEADLINE_S` treats an empty value as unset like the other numeric settings.
+- With an unreachable trace collector the process exits in a few seconds instead of 8 to 11:
+  the OTLP exporter and batch processor default to a 3 second timeout. `OTEL_EXPORTER_OTLP_TIMEOUT`,
+  `OTEL_EXPORTER_OTLP_TRACES_TIMEOUT` and `OTEL_BSP_EXPORT_TIMEOUT` still win when set.
+- Pool workers started with `spawn` or `forkserver` set up tracing as the parent does, so their
+  spans are exported (forked workers, the default on Linux, already did).
+
 ### Fast parser: additions that change nothing by default
 
 - `OBJECT_STORE_*` settings (endpoint, access key, secret key, TLS, region) for any
@@ -76,6 +123,17 @@ Before deploying, check that:
    should be compared with the `uv.lock` of the release before switching.
 11. Uvicorn with `--workers N` starts N independent copies of the service, each with its own pools and admission limits, and its supervisor still prints a few plain-text startup lines. Behind a TLS-terminating proxy, set uvicorn's `FORWARDED_ALLOW_IPS` so trailing-slash redirects keep `https`.
 12. `SERVICE_NAME`, when set, overrides the `service_name` field on every log line.
+
+13. Retry logic can rely on `Retry-After` for every 503.
+14. A caller that handles 409 and resumes from `last_page_parsed + 1` must append
+    `detail.markdown_prefix` and `detail.images` to the resumed result before cancellation is
+    enabled (set `REDIS_URL` or `CELERY_BROKER_URL`); until then nothing changes.
+15. Nothing asks for an image budget above the ceilings (see above), and the memory of the
+    container is checked against `IMAGE_MAX_BYTES_CEILING` and the document limit together.
+16. A slow object store that used to be waited for up to five minutes now fails the request
+    after at most 100 seconds (the 502 callers already retry).
+17. Shutdown: keep the platform's termination grace period longer than
+    `UVICORN_TIMEOUT_GRACEFUL_SHUTDOWN` plus `SHUTDOWN_DRAIN_SECONDS`.
 
 ### Accurate parser: changes callers can observe
 

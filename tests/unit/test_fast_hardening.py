@@ -98,7 +98,7 @@ def test_object_over_limit_is_413_from_content_length(monkeypatch):
         headers = {"Content-Length": str(fast_main.MAX_PDF_BYTES + 1)}
         closed = released = False
 
-        def read(self, *_a):
+        def read1(self, *_a):
             pytest.fail("an oversized body must not be read")
 
         def close(self):
@@ -126,8 +126,8 @@ def test_read_object_without_length_header_is_still_bounded(monkeypatch):
     class Response:
         headers: dict = {}
 
-        def read(self, amount=None):
-            return b"x" * amount
+        def read1(self, amount=None):
+            return b"x" * amount  # a body of unknown length that never ends
 
         def close(self):
             pass
@@ -149,8 +149,12 @@ def test_read_object_within_limit_returns_bytes(monkeypatch):
 
     class Response:
         headers = {"Content-Length": "5"}
+        sent = False
 
-        def read(self, amount=None):
+        def read1(self, amount=None):
+            if self.sent:
+                return b""  # end of the body
+            self.sent = True
             return b"%PDF-"
 
         def close(self):

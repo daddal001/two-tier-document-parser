@@ -255,6 +255,7 @@ def extract_images(
     pages = list(page_range)
 
     seen: Dict[str, Dict[str, Any]] = {}
+    image_of_xref: Dict[int, Optional[str]] = {}  # None marks an object that cannot be used
     total_bytes = 0
     truncated: Optional[str] = None
 
@@ -264,7 +265,33 @@ def extract_images(
         page = doc[page_num]
         for img_info in page.get_images(full=True):
             xref = img_info[0]
-            # Dedup: same xref on multiple pages → one record with pages=[...]
+            # The same image object on several pages: record the page, never extract it again.
+            if xref in image_of_xref:
+                known = image_of_xref[xref]
+                if known is not None:
+                    seen_pages = seen[known].setdefault("pages", [seen[known]["page"]])
+                    if page_num not in seen_pages:
+                        seen_pages.append(page_num)
+                continue
+
+            # The page already lists the image's size, so an oversized one is refused before
+            # anything is decoded: extraction is the expensive step this limit exists to avoid.
+            listed_pixels = int(img_info[2]) * int(img_info[3]) if len(img_info) > 3 else 0
+            if listed_pixels > max_pixels:
+                truncated = "pixels"
+                logger.warning(
+                    "image exceeds max_pixels cap",
+                    extra={
+                        "service_name": "fast-parser",
+                        "xref": xref,
+                        "width": int(img_info[2]),
+                        "height": int(img_info[3]),
+                        "max_pixels": max_pixels,
+                    },
+                )
+                break
+
+            image_of_xref[xref] = None
             try:
                 info = doc.extract_image(xref)
             except Exception as exc:
@@ -301,7 +328,8 @@ def extract_images(
             image_id = hashlib.sha256(raw).hexdigest()[:16]
 
             if image_id in seen:
-                # Same image re-appears; record the page but don't re-count bytes.
+                # The same bytes under another object: record the page, don't re-count bytes.
+                image_of_xref[xref] = image_id
                 seen_pages = seen[image_id].setdefault("pages", [seen[image_id]["page"]])
                 if page_num not in seen_pages:
                     seen_pages.append(page_num)
@@ -339,6 +367,7 @@ def extract_images(
                 "width": width,
                 "height": height,
             }
+            image_of_xref[xref] = image_id
             total_bytes += len(raw)
 
     return {
