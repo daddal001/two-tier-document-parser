@@ -64,7 +64,7 @@ def _post_ignoring_early_close(base: str, path: str, body: bytes) -> int:
         try:
             connection.send(body)
         except (BrokenPipeError, ConnectionResetError):
-            pass
+            pass  # the server may answer 413 and close before the body is sent
         return connection.getresponse().status
     finally:
         connection.close()
@@ -100,7 +100,7 @@ def server(request, tmp_path):
                     if _request(base + "/health") == 200:
                         break
                 except OSError:
-                    pass
+                    pass  # the server is still starting
                 time.sleep(0.5)
             else:
                 pytest.fail(log.read_text())

@@ -35,7 +35,7 @@ class Clock:
 def clock(monkeypatch):
     fake = Clock()
     monkeypatch.setattr(service, "_now", fake)
-    monkeypatch.setattr(service, "_redis_unavailable_until", 0.0)
+    monkeypatch.setattr(service._redis_backoff, "until", 0.0)
     return fake
 
 

@@ -30,6 +30,7 @@ import importlib
 import logging
 import os
 import time
+from types import SimpleNamespace
 from typing import Any, Dict, Iterable, List, Optional
 
 # activate PyMuPDF-Layout GNN BEFORE importing pymupdf4llm.
@@ -89,7 +90,7 @@ _now = time.monotonic  # replaced by tests
 # one-second timeout, so asking before every page of a long document while Redis is unreachable
 # would add about a second per page; one failure pays once and the following pages do not.
 _REDIS_BACKOFF_SECONDS = 30.0
-_redis_unavailable_until = 0.0
+_redis_backoff = SimpleNamespace(until=0.0)
 
 
 def _is_cancelled(task_id: Optional[str]) -> bool:
@@ -100,10 +101,9 @@ def _is_cancelled(task_id: Optional[str]) -> bool:
     again for ``_REDIS_BACKOFF_SECONDS``, then it is tried once more, so a recovered Redis
     honours cancellations again without a restart.
     """
-    global _redis_unavailable_until
     if not task_id:
         return False
-    if _now() < _redis_unavailable_until:
+    if _now() < _redis_backoff.until:
         return False
     client = _get_preempt_redis()
     if client is None:
@@ -111,7 +111,7 @@ def _is_cancelled(task_id: Optional[str]) -> bool:
     try:
         return bool(client.exists(f"parse_cancel:{task_id}"))
     except Exception:
-        _redis_unavailable_until = _now() + _REDIS_BACKOFF_SECONDS
+        _redis_backoff.until = _now() + _REDIS_BACKOFF_SECONDS
         logger.warning(
             "Redis is unavailable; cancellation checks paused",
             extra={"service_name": "fast-parser", "backoff_seconds": _REDIS_BACKOFF_SECONDS},

@@ -67,3 +67,17 @@ def test_a_failed_audit_does_not_hide_the_next_one():
     assert len(audits) == 2
     # the second runs even when the first fails, so both sets are always reported
     assert "cancelled" in audits[1].get("if", "")
+
+
+def test_ci_skips_the_local_codeql_hook_because_codeql_has_its_own_workflow():
+    steps_with_hooks = [
+        step
+        for step in steps(load(ROOT / ".github" / "workflows" / "ci.yml"))
+        if "pre-commit run --all-files" in step.get("run", "")
+    ]
+
+    assert steps_with_hooks
+    assert all("codeql" in step.get("env", {}).get("SKIP", "") for step in steps_with_hooks)
+    config = yaml.safe_load((ROOT / ".pre-commit-config.yaml").read_text())
+    ids = [hook["id"] for repo in config["repos"] for hook in repo["hooks"]]
+    assert "codeql" in ids  # and the hook it skips really exists

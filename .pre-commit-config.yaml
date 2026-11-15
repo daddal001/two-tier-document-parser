@@ -96,6 +96,30 @@ repos:
         pass_filenames: false
         files: ^(src/.*\.py|tests/.*\.py|scripts/.*\.py|pyproject\.toml|uv\.lock)$
 
+  # ── Static analysis the way GitHub runs it ─────────────────────
+  # Downloads a pinned, checksum-verified CodeQL bundle on first use (several hundred megabytes,
+  # cached in .codeql-cache) and scans the Python and Actions code with the repository's CodeQL
+  # configuration. CI skips it because the CodeQL workflow runs the same queries.
+  - repo: local
+    hooks:
+      - id: codeql
+        name: CodeQL Python and Actions security analysis
+        entry: python scripts/codeql_precommit.py
+        language: system
+        pass_filenames: false
+        require_serial: true
+        files: '(\.py$|^\.github/.*\.ya?ml$|^scripts/codeql-bundle\.json$|^\.pre-commit-config\.yaml$)'
+
+  # ── Release metadata ───────────────────────────────────────────
+  - repo: local
+    hooks:
+      - id: version-sync
+        name: package, metadata and changelog name the same release
+        entry: python scripts/check_versions.py
+        language: system
+        pass_filenames: false
+        files: ^(pyproject\.toml|CHANGELOG\.md|src/two_tier_parser/__init__\.py|scripts/check_versions\.py)$
+
   # ── Workflows, Dockerfiles and shell ───────────────────────────
   - repo: https://github.com/rhysd/actionlint
     rev: 914e7df21a07ef503a81201c76d2b11c789d3fca  # frozen: v1.7.12

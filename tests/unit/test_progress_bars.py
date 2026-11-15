@@ -33,7 +33,7 @@ def fake_tqdm(monkeypatch):
     module.tqdm = FakeTqdm
     monkeypatch.setitem(sys.modules, "tqdm", module)
     monkeypatch.setattr(FakeTqdm, "__init__", FakeTqdm.__init__)  # restored after the test
-    monkeypatch.setattr(progress_bars, "_patched", False)
+    monkeypatch.setattr(FakeTqdm, "_bars_disabled", False, raising=False)
     return FakeTqdm
 
 
@@ -77,7 +77,6 @@ def test_bars_print_until_disabled(fake_tqdm):
 
 def test_a_missing_tqdm_is_not_an_error(monkeypatch):
     monkeypatch.setitem(sys.modules, "tqdm", None)  # makes `import tqdm` raise ImportError
-    monkeypatch.setattr(progress_bars, "_patched", False)
 
     progress_bars.disable_progress_bars()  # MinerU is not installed (for example the fast image)
 
@@ -85,7 +84,7 @@ def test_a_missing_tqdm_is_not_an_error(monkeypatch):
 def test_the_real_tqdm_is_silenced_too(monkeypatch):
     real = pytest.importorskip("tqdm").tqdm
     original = real.__init__
-    monkeypatch.setattr(progress_bars, "_patched", False)
+    monkeypatch.setattr(real, "_bars_disabled", False, raising=False)
     try:
         progress_bars.disable_progress_bars()
         sink = io.StringIO()

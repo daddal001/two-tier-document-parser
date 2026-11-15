@@ -133,8 +133,8 @@ def test_a_disconnecting_client_does_not_free_the_slot_while_the_worker_runs(
             request = asyncio.create_task(client.post("/parse", files=PDF))
             await parser.wait_started(1)
             request.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await request
+            (outcome,) = await asyncio.gather(request, return_exceptions=True)
+            assert isinstance(outcome, asyncio.CancelledError)
 
             assert main._inflight_documents == 1  # the thread is still parsing
 
@@ -278,7 +278,7 @@ def test_response_size_is_measured_off_the_event_loop(monkeypatch, fresh_pool):
 def test_periodic_cleanup_logs_the_count_it_performed(monkeypatch, caplog):
     monkeypatch.setattr(main, "parse_pdf", lambda *_: _result())
     monkeypatch.setattr(main, "MAX_TASKS_BEFORE_CLEANUP", 3)
-    monkeypatch.setattr(main, "_task_counter", 0)
+    monkeypatch.setattr(main._task_state, "count", 0)
 
     with caplog.at_level(logging.INFO, logger=main.logger.name):
         for _ in range(3):
@@ -287,7 +287,7 @@ def test_periodic_cleanup_logs_the_count_it_performed(monkeypatch, caplog):
     cleanup = [r for r in caplog.records if getattr(r, "component", "") == "memory"]
     assert len(cleanup) == 1
     assert cleanup[0].tasks_since_cleanup == 3
-    assert main._task_counter == 0
+    assert main._task_state.count == 0
 
 
 def test_numeric_settings_treat_empty_as_unset_and_reject_garbage(monkeypatch):

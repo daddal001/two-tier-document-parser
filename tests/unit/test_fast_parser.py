@@ -141,6 +141,7 @@ def test_multipart_routes_without_object_store(monkeypatch, route):
                     sent = True
                     return {"type": "http.request", "body": body, "more_body": False}
                 await asyncio.Event().wait()
+                return {"type": "http.disconnect"}
 
             async def send(message):
                 messages.append(message)

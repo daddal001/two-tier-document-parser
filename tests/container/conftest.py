@@ -197,7 +197,7 @@ def run_pod(
                 if service.request("GET", "/health", timeout=3)[0] == 200:
                     break
             except (urllib.error.URLError, ConnectionError, TimeoutError):
-                pass
+                pass  # not listening yet; the deadline below bounds the wait
             if time.monotonic() > deadline:
                 raise RuntimeError("container never became healthy:\n" + "\n".join(service.logs()))
             time.sleep(1)

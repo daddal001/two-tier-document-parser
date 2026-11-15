@@ -47,7 +47,7 @@ def load_revisions() -> dict:
     override = os.getenv(REVISIONS_ENV)
     try:
         if override:
-            text = open(override, encoding="utf-8").read()
+            text = Path(override).read_text(encoding="utf-8")
         else:
             text = resources.files(__package__).joinpath("model_revisions.json").read_text("utf-8")
         revisions = json.loads(text)["huggingface"]

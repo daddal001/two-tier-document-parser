@@ -43,6 +43,9 @@ jobs:
           path: ~/.cache/pre-commit
           key: pre-commit-${{ matrix.python }}-${{ hashFiles('.pre-commit-config.yaml') }}
       - name: Run all hooks
+        # CodeQL has its own workflow; the local hook would download a multi-gigabyte bundle here.
+        env:
+          SKIP: codeql
         run: uv run --frozen --no-sync pre-commit run --all-files --show-diff-on-failure
       - name: Scan the full git history for secrets
         run: uv run --frozen --no-sync pre-commit run gitleaks-history --hook-stage manual --all-files

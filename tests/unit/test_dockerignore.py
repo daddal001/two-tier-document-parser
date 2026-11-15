@@ -19,7 +19,9 @@ def copy_sources():
         for line in text.splitlines():
             if not line.startswith("COPY ") or "--from=" in line:
                 continue
-            *sources, _destination = [w for w in line.split()[1:] if not w.startswith("--")]
+            sources = [w for w in line.split()[1:] if not w.startswith("--")][
+                :-1
+            ]  # last is the destination
             pairs.extend((dockerfile.name, source) for source in sources)
     return pairs
 

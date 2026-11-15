@@ -24,6 +24,7 @@ import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
 from typing import Optional
 
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
@@ -236,7 +237,7 @@ def _internal_error(message: str, safe_filename: str, detail: str, exc: Optional
 
 
 # Task counter for periodic memory cleanup (thread-safe)
-_task_counter = 0
+_task_state = SimpleNamespace(count=0)
 _task_counter_lock = threading.Lock()
 
 
@@ -250,17 +251,16 @@ def _parse_pdf_with_cleanup(pdf_bytes: bytes, filename: str) -> tuple[Optional[d
     to release accumulated memory from PIL images, pdfium handles, and CUDA caches.
     Follows Meta TorchServe's worker recycling pattern adapted for ThreadPoolExecutor.
     """
-    global _task_counter
     try:
         result: Optional[dict] = parse_pdf(pdf_bytes, filename)
         size_mb = len(json.dumps(result)) / (1024 * 1024) if result else 0.0
         return result, size_mb
     finally:
         with _task_counter_lock:
-            _task_counter += 1
-            if _task_counter >= MAX_TASKS_BEFORE_CLEANUP:
-                tasks_since_cleanup = _task_counter
-                _task_counter = 0
+            _task_state.count += 1
+            if _task_state.count >= MAX_TASKS_BEFORE_CLEANUP:
+                tasks_since_cleanup = _task_state.count
+                _task_state.count = 0
                 logger.info(
                     "Periodic memory cleanup after %d tasks",
                     tasks_since_cleanup,
