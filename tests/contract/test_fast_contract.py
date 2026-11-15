@@ -74,6 +74,22 @@ def test_health_shape(client):
     assert body["status"] in {"healthy", "degraded"}
 
 
+@pytest.mark.parametrize("path", ["/parse", "/parse-pages"])
+@pytest.mark.parametrize(
+    "field", ["start_page", "image_max_count", "image_max_bytes", "image_max_pixels"]
+)
+@pytest.mark.parametrize("number", ["1e309", "-1e309", "NaN", "Infinity", '"Infinity"'])
+def test_nonfinite_numeric_options_are_400_before_storage(client, monkeypatch, path, field, number):
+    def forbidden(*args):
+        pytest.fail("Invalid numeric input must not fetch a document")
+
+    monkeypatch.setattr(fast_main, "read_object", forbidden)
+    body = '{"bucket":"documents","key":"doc.pdf","' + field + '":' + number + "}"
+    response = client.post(path, content=body, headers={"content-type": "application/json"})
+    assert response.status_code == 400
+    assert response.json()["detail"] == f"'{field}' must be a finite number"
+
+
 def test_metrics_is_prometheus_text(client):
     response = client.get("/metrics")
     assert response.status_code == 200

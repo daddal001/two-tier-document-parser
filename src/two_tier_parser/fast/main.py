@@ -20,6 +20,7 @@ import asyncio
 import importlib
 import json
 import logging
+import math
 import os
 import sys
 import threading
@@ -536,6 +537,21 @@ IMAGE_MAX_BYTES_CEILING = env_number("IMAGE_MAX_BYTES_CEILING", 1_100_000_000, i
 IMAGE_MAX_PIXELS_CEILING = env_number("IMAGE_MAX_PIXELS_CEILING", 10_000_000_000, int, minimum=0)
 
 
+def _payload_integer(payload: dict, name: str, default: int) -> int:
+    """Keep the established fallback for malformed options, but reject non-finite numbers."""
+    value = payload.get(name, default)
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        try:
+            finite = math.isfinite(float(value))
+        except (TypeError, ValueError, OverflowError):
+            finite = True
+        if not finite:
+            raise HTTPException(status_code=400, detail=f"'{name}' must be a finite number")
+        return default
+
+
 def _image_opts_from_payload(payload: dict, *, stage1: bool = False) -> dict:
     """Extract image-extraction options from a JSON request payload.
 
@@ -549,18 +565,9 @@ def _image_opts_from_payload(payload: dict, *, stage1: bool = False) -> dict:
     extract = payload.get("extract_images", True)
     if isinstance(extract, str):
         extract = extract.strip().lower() in {"1", "true", "yes"}
-    try:
-        max_count = int(payload.get("image_max_count", default_max_count))
-    except (TypeError, ValueError):
-        max_count = default_max_count
-    try:
-        max_bytes = int(payload.get("image_max_bytes", default_max_bytes))
-    except (TypeError, ValueError):
-        max_bytes = default_max_bytes
-    try:
-        max_pixels = int(payload.get("image_max_pixels", default_max_pixels))
-    except (TypeError, ValueError):
-        max_pixels = default_max_pixels
+    max_count = _payload_integer(payload, "image_max_count", default_max_count)
+    max_bytes = _payload_integer(payload, "image_max_bytes", default_max_bytes)
+    max_pixels = _payload_integer(payload, "image_max_pixels", default_max_pixels)
 
     return {
         "extract_images_flag": bool(extract),
@@ -601,10 +608,7 @@ async def _read_pdf_from_request(
         key = payload.get("key")
         filename = payload.get("filename", "document.pdf")
         task_id = payload.get("task_id")
-        try:
-            start_page = max(0, int(payload.get("start_page", 0)))
-        except (TypeError, ValueError):
-            start_page = 0
+        start_page = max(0, _payload_integer(payload, "start_page", 0))
         image_opts = _image_opts_from_payload(payload, stage1=stage1)
 
         if not isinstance(bucket, str) or not bucket or not isinstance(key, str) or not key:
