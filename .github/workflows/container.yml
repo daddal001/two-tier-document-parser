@@ -7,6 +7,9 @@ on:
   push:
     branches: [main]
     paths:
+      - '.dockerignore'
+      - 'README.md'
+      - 'LICENSE'
       - 'deploy/Dockerfile.fast'
       - 'src/**'
       - 'pyproject.toml'
@@ -15,6 +18,9 @@ on:
       - '.github/workflows/container.yml'
   pull_request:
     paths:
+      - '.dockerignore'
+      - 'README.md'
+      - 'LICENSE'
       - 'deploy/Dockerfile.fast'
       - 'src/**'
       - 'pyproject.toml'

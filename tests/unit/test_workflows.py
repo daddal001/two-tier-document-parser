@@ -1,6 +1,7 @@
 """Workflow hygiene that does not need the network: pinned actions, least privilege."""
 
 import re
+from fnmatch import fnmatchcase
 from pathlib import Path
 
 import pytest
@@ -64,9 +65,9 @@ def test_a_failed_audit_does_not_hide_the_next_one():
         s for s in security["jobs"]["dependencies"]["steps"] if "pip-audit" in s.get("run", "")
     ]
 
-    assert len(audits) == 2
+    assert len(audits) == 3
     # the second runs even when the first fails, so both sets are always reported
-    assert "cancelled" in audits[1].get("if", "")
+    assert all("cancelled" in audit.get("if", "") for audit in audits[1:])
 
 
 def test_ci_skips_the_local_codeql_hook_because_codeql_has_its_own_workflow():
@@ -81,3 +82,13 @@ def test_ci_skips_the_local_codeql_hook_because_codeql_has_its_own_workflow():
     config = yaml.safe_load((ROOT / ".pre-commit-config.yaml").read_text())
     ids = [hook["id"] for repo in config["repos"] for hook in repo["hooks"]]
     assert "codeql" in ids  # and the hook it skips really exists
+
+
+@pytest.mark.parametrize("event", ["push", "pull_request"])
+@pytest.mark.parametrize("workflow", ["container.yml", "accurate-image.yml"])
+@pytest.mark.parametrize(
+    "path", [".dockerignore", "pyproject.toml", "uv.lock", "README.md", "LICENSE"]
+)
+def test_image_checks_run_when_shared_build_inputs_change(event, workflow, path):
+    patterns = load(ROOT / ".github" / "workflows" / workflow)[True][event]["paths"]
+    assert any(fnmatchcase(path, pattern) for pattern in patterns), (workflow, event, path)

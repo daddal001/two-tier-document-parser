@@ -83,11 +83,8 @@ def test_the_gpu_image_cannot_replace_the_base_images_cuda_stack():
     assert installs
     for line in installs:
         assert "-c /opt/base-constraints.txt" in line, f"no base constraints: {line}"
-        if "--no-deps" in line:
-            # the one deliberate exception: Pillow, over the cap an unused dependency sets on it
-            assert "'pillow>=13.0.0'" in line, f"unexpected install without resolving: {line}"
-        else:
-            assert "-c /opt/mineru-compat.txt" in line, f"no MinerU compatibility limits: {line}"
+        assert "--no-deps" in line, f"runtime dependencies must come from the compiled set: {line}"
+    assert any("-r /opt/accurate-gpu.txt" in line for line in installs)
 
 
 def test_the_gpu_image_bakes_models_into_a_directory_the_user_can_read():

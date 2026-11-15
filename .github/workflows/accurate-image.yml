@@ -10,6 +10,12 @@ on:
   push:
     branches: [main]
     paths:
+      - '.dockerignore'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'README.md'
+      - 'LICENSE'
+      - 'src/two_tier_parser/__init__.py'
       - 'deploy/Dockerfile.accurate.cpu'
       - 'deploy/entrypoint-accurate.sh'
       - 'deploy/constraints/**'
@@ -20,6 +26,12 @@ on:
       - '.github/workflows/accurate-image.yml'
   pull_request:
     paths:
+      - '.dockerignore'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'README.md'
+      - 'LICENSE'
+      - 'src/two_tier_parser/__init__.py'
       - 'deploy/Dockerfile.accurate.cpu'
       - 'deploy/entrypoint-accurate.sh'
       - 'deploy/constraints/**'

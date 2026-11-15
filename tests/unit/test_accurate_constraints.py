@@ -130,11 +130,9 @@ def test_the_compiled_pins_respect_the_compatibility_limits():
         ), f"{requirement.name}=={pinned[name]} is outside the limit {requirement.specifier}"
 
 
-def test_the_cpu_dockerfile_copies_the_compatibility_limits_too():
-    # The CPU image pins everything, so the limits are already inside accurate-cpu.txt; the
-    # GPU image installs unpinned dependencies and relies on this file directly.
-    gpu = (ROOT / "deploy" / "Dockerfile.accurate").read_text()
-    assert "COPY deploy/constraints/mineru-compat.txt /opt/mineru-compat.txt" in gpu
+def test_the_gpu_compiler_uses_the_compatibility_limits_too():
+    compiler = (ROOT / "scripts/compile_gpu_constraints.py").read_text()
+    assert '"-c",' in compiler and "deploy/constraints/mineru-compat.txt" in compiler
 
 
 OVERRIDES = ROOT / "deploy" / "constraints" / "overrides.txt"
@@ -158,11 +156,13 @@ def test_the_override_that_lifts_the_cap_is_recorded_and_used_by_the_compile_com
 def test_the_cuda_image_installs_the_fixed_pillow_over_gradios_cap():
     lines = read_dockerfile_lines(ROOT / "deploy" / "Dockerfile.accurate")
     installs = [i for i, line in enumerate(lines) if "pip install" in line]
-    pillow = [i for i in installs if "pillow>=13.0.0" in lines[i]]
-
-    assert pillow, "the CUDA image resolves Pillow below 13 unless it is installed explicitly"
-    assert "--no-deps" in lines[pillow[0]]
-    assert pillow[0] == installs[-1]  # after everything that would otherwise move it back
+    pinned = (ROOT / "deploy/constraints/accurate-gpu.txt").read_text()
+    pillow = Requirement(next(line for line in pinned.splitlines() if line.startswith("pillow==")))
+    assert (
+        tuple(int(n) for n in next(iter(pillow.specifier)).version.split(".")[:3]) >= PILLOW_FIXED
+    )
+    assert all("--no-deps" in lines[i] for i in installs)
+    assert any("-r /opt/accurate-gpu.txt" in lines[i] for i in installs)
 
 
 def read_dockerfile_lines(path):

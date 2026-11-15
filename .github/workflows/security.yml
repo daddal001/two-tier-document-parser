@@ -48,6 +48,9 @@ jobs:
         # a finding in the lock file must not hide the findings in this separate set
         if: ${{ !cancelled() }}
         run: uvx --from pip-audit==2.10.1 pip-audit --disable-pip --no-deps -r deploy/constraints/accurate-cpu.txt
+      - name: Audit the accurate GPU image's pinned Python set
+        if: ${{ !cancelled() }}
+        run: uvx --from pip-audit==2.10.1 pip-audit --disable-pip --no-deps -r deploy/constraints/accurate-gpu.txt
 
   code:
     # Static analysis of the service code, the Dockerfiles, the workflows and any committed secret.

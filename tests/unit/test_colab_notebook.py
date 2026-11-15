@@ -39,14 +39,14 @@ def test_it_tests_the_tier_and_engine_the_cuda_image_serves(cells):
 
     assert 'TIER = "standard"' in text  # on CUDA the service always selects the vision model
     assert '"MINERU_MODEL_VLM_ENGINE": "vllm"' in text
-    assert "deploy/constraints/mineru-compat.txt" in text
+    assert "deploy/constraints/accurate-gpu.txt" in text
 
 
 def test_it_installs_the_same_fixed_pillow_as_the_cuda_image(cells):
     text = "\n".join(code_cells(cells))
     dockerfile = (ROOT / "deploy" / "Dockerfile.accurate").read_text()
 
-    assert "'pillow>=13.0.0'" in text and "'pillow>=13.0.0'" in dockerfile
+    assert "deploy/constraints/accurate-gpu.txt" in text and "accurate-gpu.txt" in dockerfile
 
 
 def test_the_checks_import_only_what_the_notebook_kernel_has_installed(cells):

@@ -92,6 +92,7 @@ def test_development_files_stay_out_of_the_build_context(path):
         "deploy/Dockerfile.fast",
         "deploy/entrypoint-accurate.sh",
         "deploy/constraints/accurate-cpu.txt",
+        "deploy/constraints/accurate-gpu.txt",
         "MinerU/pyproject.toml",
         "MinerU/LICENSE.md",  # MinerU's build reads its license file, so markdown there is kept
         "MinerU/README.md",

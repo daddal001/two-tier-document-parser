@@ -1,0 +1,4 @@
+# Linux CUDA runtime. Keep vLLM aligned with deploy/Dockerfile.accurate.
+-e ./MinerU[torch]
+.[accurate,telemetry,telemetry-sdk]
+vllm==0.21.0

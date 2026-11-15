@@ -1,4 +1,4 @@
-.PHONY: help install dev build build-accurate up down logs clean clean-volumes test test-unit test-integration test-container test-coverage constraints lint format type-check coverage check hooks
+.PHONY: help install dev build build-accurate up down logs clean clean-volumes test test-unit test-integration test-container test-coverage constraints constraints-gpu lint format type-check coverage check hooks
 
 .DEFAULT_GOAL := help
 
@@ -49,6 +49,9 @@ constraints:
 
 test-container:
 	pytest tests/container -v -m "container and not models"
+
+constraints-gpu:
+	python scripts/compile_gpu_constraints.py
 
 test-coverage:
 	pytest tests/ -m "not integration and not models and not container" --cov=src/two_tier_parser --cov-branch --cov-report=html --cov-report=term
@@ -116,6 +119,7 @@ help:
 	@echo "  make test-unit        - Unit tests only"
 	@echo "  make test-integration - Tests against running services"
 	@echo "  make constraints      - Regenerate the pinned dependency set of the accurate CPU image"
+	@echo "  make constraints-gpu  - Regenerate the accurate CUDA image's Linux dependency pins"
 	@echo "  make test-container   - Build the fast image and test it under pod-like limits (needs Docker)"
 	@echo "  make test-coverage    - Tests with coverage report"
 	@echo "  make check            - black, isort, flake8 and mypy (CI also runs every pre-commit hook)"
