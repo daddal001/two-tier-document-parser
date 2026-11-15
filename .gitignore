@@ -85,3 +85,6 @@ tests/perf/results/
 # Downloaded Vale packages (vale sync); the project vocabulary in styles/config stays tracked
 styles/*/
 !styles/config/
+
+# Session file some editors write into the working directory
+:memory:.ses

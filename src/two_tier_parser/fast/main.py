@@ -826,7 +826,7 @@ async def parse(request: Request) -> ParseResponse:
 
         # Parse PDF in process pool
         try:
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             logger.debug(
                 "Submitting to process pool",
                 extra={
@@ -1014,7 +1014,7 @@ async def parse_pages(
         # `executor`. Refresh queue-depth after submit so the gauge reflects
         # the new pending count for any concurrent scrape.
         try:
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             active_executor = pages_executor
             future = loop.run_in_executor(
                 active_executor,

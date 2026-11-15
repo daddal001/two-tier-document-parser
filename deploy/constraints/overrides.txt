@@ -1,0 +1,7 @@
+# Dependency limits that are deliberately lifted when compiling accurate-cpu.txt.
+#
+# MinerU 4.0.12 depends on gradio (its web UI), and gradio caps Pillow below 13. This service
+# never imports gradio, but Pillow decodes the images inside every PDF it is given, and 12.x
+# has dozens of published advisories that 13.0.0 fixes. The cap is lifted here, and the pinned
+# set is installed without resolving it so the cap is not applied again (see the Dockerfile).
+pillow>=13.0.0

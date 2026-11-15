@@ -98,6 +98,29 @@ def test_claim_check_without_a_store_is_501(standalone):
     assert status == 501
 
 
+def test_the_installer_is_not_in_the_image(standalone):
+    # Nothing installs packages at run time; leaving pip out removes its vendored libraries
+    # (which scanners report) and a way to add code to a running container.
+    result = subprocess.run(
+        ["docker", "exec", standalone.container, "python", "-m", "pip", "--version"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode != 0 and "No module named pip" in result.stderr
+
+
+def test_tracing_is_configured_when_a_collector_is_set(fast_image, sample_pdf):
+    """The SDK and exporter work in the image as built, without pip or setuptools present."""
+    env = {"OTEL_SDK_DISABLED": "false", "OTEL_EXPORTER_OTLP_ENDPOINT": "http://127.0.0.1:9"}
+    with run_pod(fast_image, env=env) as service:
+        status, _, body = service.upload("/parse", sample_pdf)
+        assert status == 200 and body["markdown"]  # an unreachable collector never fails a request
+        messages = " ".join(service.logs())
+        assert "OpenTelemetry SDK configured with OTLP exporter" in messages
+        assert "Traceback" not in messages
+
+
 def test_every_log_line_is_json(standalone, sample_pdf):
     standalone.upload("/parse", sample_pdf)
     standalone.request("GET", "/health")

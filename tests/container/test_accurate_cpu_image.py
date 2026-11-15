@@ -331,3 +331,20 @@ def test_a_model_volume_older_than_the_pin_is_refused_not_served(accurate_image,
     )
     assert result.returncode != 0
     assert "not at the pinned revision" in result.stderr
+
+
+def test_the_installed_set_is_consistent_except_for_the_deliberate_pillow_cap(accurate_image):
+    """The pinned set is installed without resolving, so check what resolving would have caught.
+
+    gradio (MinerU's web UI, never imported here) says Pillow must stay below 13; the image
+    deliberately has 13 because Pillow decodes untrusted PDFs' images. That is the only
+    disagreement allowed.
+    """
+    report = run_in_image(accurate_image, "pip", "check", check=False)
+    problems = [line for line in report.splitlines() if line.strip() and "No broken" not in line]
+
+    assert all("pillow" in line.lower() for line in problems), problems
+    version = run_in_image(
+        accurate_image, "python", "-c", "import PIL; print(PIL.__version__)"
+    ).strip()
+    assert tuple(int(part) for part in version.split(".")[:2]) >= (13, 0), version

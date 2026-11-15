@@ -42,6 +42,13 @@ def test_it_tests_the_tier_and_engine_the_cuda_image_serves(cells):
     assert "deploy/constraints/mineru-compat.txt" in text
 
 
+def test_it_installs_the_same_fixed_pillow_as_the_cuda_image(cells):
+    text = "\n".join(code_cells(cells))
+    dockerfile = (ROOT / "deploy" / "Dockerfile.accurate").read_text()
+
+    assert "'pillow>=13.0.0'" in text and "'pillow>=13.0.0'" in dockerfile
+
+
 def test_the_checks_import_only_what_the_notebook_kernel_has_installed(cells):
     text = "\n".join(code_cells(cells))
 

@@ -44,7 +44,8 @@ test-integration:
 constraints:
 	uv pip compile deploy/constraints/accurate-cpu.in --universal --python-version 3.12 \
 		--no-emit-package mineru --no-emit-package two-tier-document-parser \
-		-c deploy/constraints/mineru-compat.txt -o deploy/constraints/accurate-cpu.txt
+		-c deploy/constraints/mineru-compat.txt --override deploy/constraints/overrides.txt \
+		-o deploy/constraints/accurate-cpu.txt
 
 test-container:
 	pytest tests/container -v -m "container and not models"

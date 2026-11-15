@@ -30,6 +30,11 @@ COPY src/ src/
 RUN python3 -m pip install -c /opt/base-constraints.txt -c /opt/mineru-compat.txt -e '.[accurate,telemetry,telemetry-sdk]' --break-system-packages \
     && python3 -m pip cache purge
 
+# MinerU's web-UI dependency (gradio, which this service never imports) caps Pillow below 13.
+# Pillow decodes the images inside untrusted PDFs, and 12.x has dozens of published advisories
+# that 13.0.0 fixes, so the fixed release is installed over the capped one, last.
+RUN python3 -m pip install -c /opt/base-constraints.txt --no-deps 'pillow>=13.0.0' --break-system-packages
+
 COPY deploy/entrypoint-accurate.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 

@@ -100,13 +100,16 @@ def test_the_cpu_image_never_pulls_a_cuda_stack(environment):
     assert not [name for name in pinned if name.startswith("nvidia-")]
 
 
-def test_the_cpu_dockerfile_installs_with_the_pins():
+def test_the_cpu_dockerfile_installs_exactly_the_pinned_set_without_resolving_it():
     text = (ROOT / "deploy" / "Dockerfile.accurate.cpu").read_text().replace("\\\n", " ")
     installs = [line for line in text.splitlines() if "pip install" in line]
+
     assert installs
     for line in installs:
-        assert "-c /tmp/constraints.txt" in line
-    assert "COPY deploy/constraints/accurate-cpu.txt /tmp/constraints.txt" in text
+        # Resolving would apply gradio's cap on Pillow again; the set was resolved by uv already.
+        assert "--no-deps" in line, line
+    assert any("-r /tmp/requirements.txt" in line for line in installs)
+    assert "COPY deploy/constraints/accurate-cpu.txt /tmp/requirements.txt" in text
 
 
 COMPAT = ROOT / "deploy" / "constraints" / "mineru-compat.txt"
@@ -132,3 +135,36 @@ def test_the_cpu_dockerfile_copies_the_compatibility_limits_too():
     # GPU image installs unpinned dependencies and relies on this file directly.
     gpu = (ROOT / "deploy" / "Dockerfile.accurate").read_text()
     assert "COPY deploy/constraints/mineru-compat.txt /opt/mineru-compat.txt" in gpu
+
+
+OVERRIDES = ROOT / "deploy" / "constraints" / "overrides.txt"
+PILLOW_FIXED = (13, 0, 0)  # the release that fixes the advisories published against 12.x
+
+
+def test_pillow_is_pinned_at_or_above_the_release_that_fixes_the_advisories():
+    # Pillow decodes the images inside PDFs, which are untrusted input. MinerU's web-UI
+    # dependency (gradio, which this service never imports) caps Pillow below 13, so left alone
+    # the image resolves to a 12.x release with dozens of published advisories.
+    for environment in ENVIRONMENTS:
+        version = tuple(int(part) for part in pins_for(environment)["pillow"].split(".")[:3])
+        assert version >= PILLOW_FIXED, f"pillow {version} is below {PILLOW_FIXED}"
+
+
+def test_the_override_that_lifts_the_cap_is_recorded_and_used_by_the_compile_command():
+    assert "pillow>=13.0.0" in OVERRIDES.read_text()
+    assert "--override deploy/constraints/overrides.txt" in (ROOT / "Makefile").read_text()
+
+
+def test_the_cuda_image_installs_the_fixed_pillow_over_gradios_cap():
+    lines = read_dockerfile_lines(ROOT / "deploy" / "Dockerfile.accurate")
+    installs = [i for i, line in enumerate(lines) if "pip install" in line]
+    pillow = [i for i in installs if "pillow>=13.0.0" in lines[i]]
+
+    assert pillow, "the CUDA image resolves Pillow below 13 unless it is installed explicitly"
+    assert "--no-deps" in lines[pillow[0]]
+    assert pillow[0] == installs[-1]  # after everything that would otherwise move it back
+
+
+def read_dockerfile_lines(path):
+    text = path.read_text().replace("\\\n", " ")
+    return [line.strip() for line in text.splitlines() if line.strip() and line[0] != "#"]

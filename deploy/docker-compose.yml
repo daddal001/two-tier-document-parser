@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   # Fast Parser - CPU-based using PyMuPDF4LLM
   # For high-volume, simple text extraction

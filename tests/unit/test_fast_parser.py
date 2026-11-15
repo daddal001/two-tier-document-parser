@@ -302,7 +302,7 @@ def test_full_parse_maps_worker_loss_to_retryable_503(monkeypatch):
 
     monkeypatch.setattr(fast_main, "_executor_queue_depth", lambda: 0)
     monkeypatch.setattr(fast_main, "_read_pdf_from_request", read_fixture)
-    monkeypatch.setattr(fast_main.asyncio, "get_event_loop", lambda: BrokenLoop())
+    monkeypatch.setattr(fast_main.asyncio, "get_running_loop", lambda: BrokenLoop())
     monkeypatch.setattr(fast_main, "_recover_broken_executor", recover)
 
     with pytest.raises(fast_main.HTTPException) as raised:

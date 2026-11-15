@@ -95,6 +95,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   credential that can read what the service needs was reported as `degraded`. A store that
   cannot be reached, rejects the credentials, or fails is still `degraded`.
 
+- The image no longer contains pip, setuptools or wheel, and no compiler or development
+  headers. Nothing installs packages at run time, and image scanners reported the installer's
+  own vendored libraries (five findings) separately from the service's pins; the image now
+  scans clean of fixable high and critical findings. It keeps `libgomp1`, which the layout model
+  loads. Every locked dependency has a wheel for x86-64 and arm64, so the image still builds
+  without a compiler. `gunicorn`, `loguru` and `pydantic-settings`, which nothing imported or
+  started, are no longer dependencies.
+
 ### Fast parser: additions that change nothing by default
 
 - `OBJECT_STORE_*` settings (endpoint, access key, secret key, TLS, region) for any
@@ -188,6 +196,13 @@ Before deploying, check that:
   `cpu-models` volume. The `mineru-models` and `huggingface-cache` volumes are no longer
   used: the CUDA image bakes its models in, and a volume over them would hide the models of
   a newer image.
+- Pillow is 13.0.0 in the accurate images. MinerU's web-UI dependency (`gradio`, never imported
+  by this service) caps Pillow below 13, whose 12.x releases have dozens of published
+  advisories, and Pillow decodes the images inside every PDF. The CPU image installs its pinned
+  set without resolving it (`--no-deps`), so the cap is not applied again, and `pip check` in it
+  reports that one disagreement and nothing else; the CUDA image installs the fixed release over
+  the capped one as its last step. This is verified on the CPU image with a real parse; the CUDA
+  image is covered only by the Colab notebook until it runs on a GPU host.
 - Both accurate images run as user 1000 and keep everything MinerU writes under
   `MINERU_HOME=/opt/mineru` (also `HOME`), so they work when the platform forces that user
   and sets no home directory. Nothing lives under `/root` any more.

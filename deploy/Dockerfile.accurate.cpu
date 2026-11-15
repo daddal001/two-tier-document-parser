@@ -3,16 +3,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgl1 libglib2.0-0 libgomp1 fonts-noto-core fonts-noto-cjk \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
-# Every dependency, including MinerU's own, is pinned by this file so a rebuild installs the
-# same versions. Regenerate it with `make constraints` after changing dependencies.
-COPY deploy/constraints/accurate-cpu.txt /tmp/constraints.txt
+# Every dependency, including MinerU's own, is pinned by this file, so a rebuild installs the
+# same versions. Regenerate it with `make constraints` after changing dependencies. It is
+# installed as it is, without resolving (--no-deps): uv resolved it, and resolving again would
+# apply the cap that MinerU's unused web-UI dependency puts on Pillow, which the file lifts
+# because Pillow decodes the images inside untrusted PDFs.
+COPY deploy/constraints/accurate-cpu.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir --no-deps -r /tmp/requirements.txt
 COPY MinerU /opt/MinerU
-RUN pip install --no-cache-dir -c /tmp/constraints.txt -e /opt/MinerU
+RUN pip install --no-cache-dir --no-deps -e /opt/MinerU
 COPY pyproject.toml README.md LICENSE ./
 COPY src/ src/
 # No `accurate` extra: it adds PyTorch, whose default Linux wheel bundles CUDA libraries.
 # The ONNX pipeline backend selected below does not need it.
-RUN pip install --no-cache-dir -c /tmp/constraints.txt '.[telemetry,telemetry-sdk]'
+RUN pip install --no-cache-dir --no-deps .
 COPY deploy/entrypoint-accurate.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 # Run unprivileged. The platform may force UID 1000 and set no HOME, so everything MinerU

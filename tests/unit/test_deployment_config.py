@@ -83,7 +83,11 @@ def test_the_gpu_image_cannot_replace_the_base_images_cuda_stack():
     assert installs
     for line in installs:
         assert "-c /opt/base-constraints.txt" in line, f"no base constraints: {line}"
-        assert "-c /opt/mineru-compat.txt" in line, f"no MinerU compatibility limits: {line}"
+        if "--no-deps" in line:
+            # the one deliberate exception: Pillow, over the cap an unused dependency sets on it
+            assert "'pillow>=13.0.0'" in line, f"unexpected install without resolving: {line}"
+        else:
+            assert "-c /opt/mineru-compat.txt" in line, f"no MinerU compatibility limits: {line}"
 
 
 def test_the_gpu_image_bakes_models_into_a_directory_the_user_can_read():
@@ -105,3 +109,41 @@ def test_the_cuda_profile_does_not_hide_the_baked_models_behind_a_volume():
         "volumes"
     ), "a named volume would shadow the models baked into the image"
     assert "mineru-models" not in (compose.get("volumes") or {})
+
+
+def test_the_fast_image_has_no_compiler_and_installs_a_pinned_pip():
+    lines = read_dockerfile("Dockerfile.fast")
+    text = "\n".join(lines)
+
+    assert "build-essential" not in text  # every dependency installs from a wheel
+    assert "libffi-dev" not in text
+    upgrade = [line for line in lines if "pip install" in line and "--upgrade pip" in line]
+    assert upgrade and all("pip==" in line for line in upgrade)  # the one unpinned tool
+
+
+def test_compose_does_not_carry_the_obsolete_version_key():
+    assert "version" not in read_compose("docker-compose.yml")
+
+
+def test_the_handlers_use_the_running_loop():
+    source = (ROOT / "src" / "two_tier_parser" / "fast" / "main.py").read_text()
+
+    assert (
+        "get_event_loop" not in source
+    )  # deprecated inside a coroutine; get_running_loop is exact
+
+
+def test_stray_session_files_cannot_be_committed():
+    ignored = (ROOT / ".gitignore").read_text().splitlines()
+
+    assert ":memory:.ses" in ignored
+
+
+def test_the_fast_image_leaves_the_installer_out_of_the_final_layer():
+    lines = read_dockerfile("Dockerfile.fast")
+    install = max(i for i, line in enumerate(lines) if "pip install" in line)
+    removal = [i for i, line in enumerate(lines) if "pip uninstall" in line]
+
+    assert removal, "pip and its vendored libraries are reported by every image scanner"
+    assert removal[0] > install  # after everything that needs it
+    assert all(name in lines[removal[0]] for name in ("pip", "setuptools"))
