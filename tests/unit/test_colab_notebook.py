@@ -40,6 +40,9 @@ def test_it_tests_the_tier_and_engine_the_cuda_image_serves(cells):
     assert 'TIER = "standard"' in text  # on CUDA the service always selects the vision model
     assert '"MINERU_MODEL_VLM_ENGINE": "vllm"' in text
     assert "deploy/constraints/accurate-gpu.txt" in text
+    assert (
+        "-c deploy/constraints/vllm-base.txt" in text
+    )  # vLLM's dependencies stay at the base image's versions
 
 
 def test_it_installs_the_same_fixed_pillow_as_the_cuda_image(cells):
@@ -111,3 +114,73 @@ def test_the_notebook_checks_pass_against_the_real_app_with_a_fake_parser(cells,
     failed = {name: detail for name, (passed, detail) in results.items() if not passed}
     assert not failed, failed
     assert len(results) == 5
+
+
+def helper_namespace(cells):
+    helpers = next(source for source in code_cells(cells) if "def run_checks" in source)
+    namespace = {}
+    exec("import time, urllib.request, urllib.error\n" + helpers, namespace)  # noqa: S102
+    return namespace
+
+
+def test_the_markdown_pictures_are_resolved_for_display_by_image_id(cells):
+    inline = helper_namespace(cells)["inline_images"]
+    images = [{"image_id": "page_0_img_0", "image_base64": "QUJD"}]
+
+    shown = inline("a ![fig](page_0_img_0) b ![](page_9_img_9)", images)
+
+    assert shown == "a ![fig](data:image/png;base64,QUJD) b ![](page_9_img_9)"
+
+
+def test_a_failed_check_prints_the_service_log_for_its_correlation_id(cells, tmp_path, capsys):
+    show = helper_namespace(cells)["show_failure_log"]
+    log = tmp_path / "service.log"
+    log.write_text(
+        '{"message": "started"}\n'
+        '{"message": "Parse failed", "correlation_id": "abc123def456", "exception": "Traceback ... boom"}\n'
+        '{"message": "other"}\n'
+    )
+
+    show(
+        str(log),
+        {
+            "a parse": (
+                False,
+                "AssertionError: (500, {'detail': 'Parsing failed (correlation_id=abc123def456)'})",
+            )
+        },
+    )
+
+    output = capsys.readouterr().out
+    assert "correlation_id abc123def456" in output
+    assert "Traceback ... boom" in output
+    assert "last 60 lines" in output
+
+
+def test_it_parses_and_shows_the_paper_the_visualization_notebook_uses(cells):
+    text = "\n".join(code_cells(cells))
+    visualization = (ROOT / "examples" / "notebooks" / "parser_visualization.ipynb").read_text()
+
+    assert "examples/data/sample.pdf" in text
+    assert "../data/sample.pdf" in visualization  # the same file
+    for display in (
+        "inline_images(result",
+        'result["images"]',
+        'result["tables"]',
+        'result["formulas"]',
+    ):
+        assert display in text
+    assert "CC BY 4.0" in "\n".join(source for kind, source in cells if kind == "markdown")
+
+
+def test_the_service_runs_with_the_venv_tools_on_path_and_without_the_flashinfer_compile(cells):
+    """vLLM's FlashInfer sampler compiles a kernel on first use and needs ``ninja`` on PATH.
+
+    The service runs from the venv without activating it, so the venv's bin directory must be
+    on PATH; the sampler is also turned off, because a Colab venv has none of the prebuilt
+    kernels the CUDA image ships and the compile needs a CUDA toolkit that matches torch.
+    """
+    start = next(s for s in code_cells(cells) if "uvicorn" in s and "Popen" in s)
+
+    assert 'f"{WORK}/venv/bin:"' in start and "PATH" in start
+    assert '"VLLM_USE_FLASHINFER_SAMPLER": "0"' in start
