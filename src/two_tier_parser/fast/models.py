@@ -67,6 +67,17 @@ class PageRangeMetadata(BaseModel):
     processing_time_ms: int = Field(..., description="Processing time in milliseconds")
     parser: str = Field(default="pymupdf4llm", description="Parser library name")
     version: str = Field(default="0.2.0", description="Parser version")
+    skipped_pages: Optional[List[int]] = Field(
+        default=None,
+        description="One-based pages replaced by a placeholder because they could not be converted. "
+        "Absent when every page converted.",
+    )
+    warning: Optional[str] = Field(default=None, description="Present when pages were skipped")
+    images_truncated: Optional[str] = Field(
+        default=None,
+        description="Why images were left out: 'count', 'bytes' or 'pixels'. Absent when no limit "
+        "was reached, so a caller can tell 'no images' from 'images omitted by a limit'.",
+    )
 
 
 class PageRangeParseResponse(BaseModel):

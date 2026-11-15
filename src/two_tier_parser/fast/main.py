@@ -35,6 +35,7 @@ from opentelemetry import trace
 from starlette.datastructures import UploadFile
 
 from .. import API_VERSION
+from ..common.env import env_number
 from ..common.http_limits import BodyLimitMiddleware, exceeds, route_path
 from ..common.json_logging import configure_json_logging, safe_log_value
 from ..common.lifecycle import drain_budget, drain_pools
@@ -147,26 +148,8 @@ def _default_workers() -> int:
     return max(1, os.cpu_count() or 2)
 
 
-def _env_number(name: str, default: Any, kind: Any, minimum: Optional[float] = None) -> Any:
-    """Read a numeric setting, treating an empty value as unset.
-
-    An empty variable is what templated deployments produce for an unset value. A
-    malformed or out-of-range value stops startup with a message naming the variable.
-    """
-    raw = (os.getenv(name) or "").strip()
-    if not raw:
-        return default
-    try:
-        value = kind(raw)
-    except ValueError:
-        raise ValueError(f"{name} must be a number, got {raw!r}") from None
-    if minimum is not None and value < minimum:
-        raise ValueError(f"{name} must be at least {minimum}, got {raw!r}")
-    return value
-
-
-WORKERS = _env_number("WORKERS", _default_workers(), int, minimum=1)
-MAX_TASKS = _env_number("WORKER_MAX_TASKS", 50, int, minimum=1)
+WORKERS = env_number("WORKERS", _default_workers(), int, minimum=1)
+MAX_TASKS = env_number("WORKER_MAX_TASKS", 50, int, minimum=1)
 SHUTDOWN_DRAIN_SECONDS = drain_budget()
 
 
@@ -192,7 +175,7 @@ executor = _new_pool(WORKERS)
 # Eliminates priority inversion against multi-minute `/parse` calls on the
 # shared `executor`. The established default keeps at least two page workers;
 # deployments with tighter capacity can override this explicitly.
-PAGES_WORKERS = _env_number("PAGES_WORKERS", max(2, WORKERS // 2), int, minimum=1)
+PAGES_WORKERS = env_number("PAGES_WORKERS", max(2, WORKERS // 2), int, minimum=1)
 pages_executor = _new_pool(PAGES_WORKERS)
 _executor_reset_lock = threading.Lock()
 
@@ -230,7 +213,7 @@ def _recover_broken_executor(
 
 
 # backpressure threshold: 503 when queue depth > BACKPRESSURE_FACTOR × workers.
-PAGES_BACKPRESSURE_FACTOR = _env_number("PAGES_BACKPRESSURE_FACTOR", 2, int)
+PAGES_BACKPRESSURE_FACTOR = env_number("PAGES_BACKPRESSURE_FACTOR", 2, int)
 
 # Stage-2 `/parse` admission control. Symmetric to the `/parse-pages`
 # backpressure but on the SHARED `executor`. Without this, `/parse` had no
@@ -238,14 +221,14 @@ PAGES_BACKPRESSURE_FACTOR = _env_number("PAGES_BACKPRESSURE_FACTOR", 2, int)
 # the shared process pool, growing latency and memory instead of shedding load.
 # A 503 lets callers apply bounded backoff. This pool-specific check falls open
 # if the executor's private queue attribute is unavailable.
-PARSE_BACKPRESSURE_FACTOR = _env_number("PARSE_BACKPRESSURE_FACTOR", 2, int)
+PARSE_BACKPRESSURE_FACTOR = env_number("PARSE_BACKPRESSURE_FACTOR", 2, int)
 
 # Bound the complete document working set (uploads/storage reads plus executor work), not
 # only the private ProcessPoolExecutor queue. This prevents concurrent requests
 # from each passing a stale queue-depth check and buffering unbounded PDFs.
 # Default to the configured process slots for standalone deployments. Callers
 # can set a different positive bound for their memory and latency requirements.
-MAX_INFLIGHT_DOCUMENTS = _env_number(
+MAX_INFLIGHT_DOCUMENTS = env_number(
     "MAX_INFLIGHT_DOCUMENTS", WORKERS + PAGES_WORKERS, int, minimum=1
 )
 _HEALTH_TIMEOUT_NAME = (
@@ -253,7 +236,7 @@ _HEALTH_TIMEOUT_NAME = (
     if os.getenv("OBJECT_STORE_HEALTH_TIMEOUT_SECONDS")
     else "MINIO_HEALTH_TIMEOUT_SECONDS"
 )
-STORAGE_HEALTH_TIMEOUT_SECONDS = _env_number(_HEALTH_TIMEOUT_NAME, 1.5, float, minimum=0)
+STORAGE_HEALTH_TIMEOUT_SECONDS = env_number(_HEALTH_TIMEOUT_NAME, 1.5, float, minimum=0)
 if WORKERS < 1 or PAGES_WORKERS < 1 or MAX_TASKS < 1 or MAX_INFLIGHT_DOCUMENTS < 1:
     raise ValueError(
         "WORKERS, PAGES_WORKERS, WORKER_MAX_TASKS, and MAX_INFLIGHT_DOCUMENTS must be positive"
@@ -690,6 +673,31 @@ async def _read_pdf_from_request(
         )
 
 
+def _preemption_detail(result: dict, last_page: int, total_pages: int) -> dict:
+    """The body of a 409: where the parse stopped, and everything it finished.
+
+    A resume starts after ``last_page_parsed``, so the pages parsed before the cancel exist
+    nowhere else. The body therefore carries their Markdown and images, and the resumed
+    response (which covers only the remaining pages) completes the document when appended
+    to it. The first four keys predate the prefix and keep their meaning.
+    """
+    metadata = result["metadata"]
+    markdown = result.get("markdown", "")
+    detail = {
+        "reason": "preempted",
+        "last_page_parsed": last_page,
+        "pages_total": total_pages,
+        "markdown_prefix_length": len(markdown),
+        "start_page": metadata.get("start_page", 0),
+        "markdown_prefix": markdown,
+        "images": result.get("images", []),
+    }
+    for key in ("skipped_pages", "images_truncated"):
+        if key in metadata:
+            detail[key] = metadata[key]
+    return detail
+
+
 @app.post("/parse", response_model=ParseResponse)
 async def parse(request: Request) -> ParseResponse:
     """Parse PDF file to markdown.
@@ -733,6 +741,7 @@ async def parse(request: Request) -> ParseResponse:
                 raise HTTPException(
                     status_code=503,
                     detail="parse_pool_saturated",
+                    headers={"Retry-After": "2"},
                 )
 
             pdf_bytes, safe_filename, parse_source, task_id, start_page, image_opts = (
@@ -831,12 +840,7 @@ async def parse(request: Request) -> ParseResponse:
                 span.set_attribute("parse.last_page_parsed", last_page)
                 raise HTTPException(
                     status_code=409,
-                    detail={
-                        "reason": "preempted",
-                        "last_page_parsed": last_page,
-                        "pages_total": total_pages,
-                        "markdown_prefix_length": len(result.get("markdown", "")),
-                    },
+                    detail=_preemption_detail(result, last_page, total_pages),
                 )
 
             total_time_ms = int((time.perf_counter() - request_start) * 1000)
@@ -880,7 +884,9 @@ async def parse(request: Request) -> ParseResponse:
             raise _internal_error("Parsing failed", safe_filename, e)
 
 
-@app.post("/parse-pages", response_model=PageRangeParseResponse)
+# Unset fields are left out so a clean response has no null-valued skipped_pages, warning or
+# images_truncated keys; every field the parser sets is still returned, null or not.
+@app.post("/parse-pages", response_model=PageRangeParseResponse, response_model_exclude_unset=True)
 async def parse_pages(
     request: Request,
     start_page: int = Query(0, ge=0, description="Start page (0-indexed, inclusive)"),
@@ -929,6 +935,7 @@ async def parse_pages(
             raise HTTPException(
                 status_code=503,
                 detail="parse_pages_pool_saturated",
+                headers={"Retry-After": "2"},
             )
 
         try:

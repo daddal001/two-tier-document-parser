@@ -46,6 +46,8 @@ if os.getenv("FAST_PARSER_DISABLE_LAYOUT", "").strip().lower() not in {"1", "tru
 import pymupdf4llm
 from opentelemetry import trace
 
+from ..common.env import env_number
+
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer("parser.fast")
 
@@ -82,13 +84,26 @@ def _get_preempt_redis():
         return None
 
 
+_now = time.monotonic  # replaced by tests
+# After a failed check Redis is left alone for this long. Each check waits up to the client's
+# one-second timeout, so asking before every page of a long document while Redis is unreachable
+# would add about a second per page; one failure pays once and the following pages do not.
+_REDIS_BACKOFF_SECONDS = 30.0
+_redis_unavailable_until = 0.0
+
+
 def _is_cancelled(task_id: Optional[str]) -> bool:
     """Non-raising check for parse_cancel:{task_id} flag.
 
     Callers check between page boundaries; returning False on error
-    means the parse runs to completion (safe default).
+    means the parse runs to completion (safe default). After a failure Redis is not asked
+    again for ``_REDIS_BACKOFF_SECONDS``, then it is tried once more, so a recovered Redis
+    honours cancellations again without a restart.
     """
+    global _redis_unavailable_until
     if not task_id:
+        return False
+    if _now() < _redis_unavailable_until:
         return False
     client = _get_preempt_redis()
     if client is None:
@@ -96,6 +111,12 @@ def _is_cancelled(task_id: Optional[str]) -> bool:
     try:
         return bool(client.exists(f"parse_cancel:{task_id}"))
     except Exception:
+        _redis_unavailable_until = _now() + _REDIS_BACKOFF_SECONDS
+        logger.warning(
+            "Redis is unavailable; cancellation checks paused",
+            extra={"service_name": "fast-parser", "backoff_seconds": _REDIS_BACKOFF_SECONDS},
+            exc_info=True,
+        )
         return False
 
 
@@ -144,7 +165,59 @@ IMAGE_TRUNCATION_REASONS = {"count", "bytes", "pixels"}
 # call within a single page is not interruptible) and returns the partial markdown
 # with HTTP 200, so the backend records partial content instead of timing out.
 # Configure below the caller's HTTP timeout so the parser returns first. 0 / negative disables the deadline.
-FAST_PARSER_WALL_DEADLINE_S = float(os.getenv("FAST_PARSER_WALL_DEADLINE_S", "1500"))
+FAST_PARSER_WALL_DEADLINE_S = env_number("FAST_PARSER_WALL_DEADLINE_S", 1500.0, float)
+
+
+# PyMuPDF4LLM raises these from its table and text-page handling when one page is damaged.
+# They describe a single page, so the page is replaced by a placeholder and the rest is kept.
+_RECOVERABLE_PAGE_ERRORS = (
+    "'NoneType' object has no attribute 'tables'",
+    "not a textpage",
+)
+
+
+def _is_recoverable_page_error(error: BaseException) -> bool:
+    """True for the known single-page conversion failures (and nothing else)."""
+    return isinstance(error, (AttributeError, ValueError)) and any(
+        marker in str(error) for marker in _RECOVERABLE_PAGE_ERRORS
+    )
+
+
+def _convert_page_or_skip(doc, page_num: int, filename: str, skipped_pages: List[int]):
+    """Convert one page to Markdown, or record it as skipped when its failure is recoverable.
+
+    A skipped page is appended to ``skipped_pages`` (one-based, for people) and replaced by a
+    placeholder so the document keeps its shape. Any other error propagates.
+
+    Returns:
+        ``(markdown, skipped)``.
+    """
+    try:
+        return pymupdf4llm.to_markdown(doc, pages=[page_num]), False
+    except (AttributeError, ValueError) as page_error:
+        if not _is_recoverable_page_error(page_error):
+            raise
+        skipped_pages.append(page_num + 1)
+        logger.warning(
+            "Skipped page due to parsing error",
+            extra={
+                "service_name": "fast-parser",
+                "document_name": filename,
+                "page": page_num + 1,
+                "error_message": str(page_error)[:50],
+            },
+        )
+        return f"\n\n---\n**[Page {page_num + 1} skipped due to parsing error]**\n---\n\n", True
+
+
+def _skipped_pages_metadata(skipped_pages: List[int]) -> Dict[str, Any]:
+    """The response metadata that tells a caller which pages were replaced by placeholders."""
+    if not skipped_pages:
+        return {}
+    return {
+        "skipped_pages": skipped_pages,
+        "warning": f"Skipped {len(skipped_pages)} page(s) due to parsing errors",
+    }
 
 
 def extract_images(
@@ -383,7 +456,7 @@ def _parse_pdf(
         # Preemptable path : task_id present means Stage 2 resume/cancel
         # semantics. We iterate page-by-page and check parse_cancel:{task_id}
         # between pages so long parses can be preempted by Stage 1 partial parses.
-        skipped_pages = []
+        skipped_pages: List[int] = []
         preempted = False
         deadline_truncated = False
         last_page_parsed = -1
@@ -437,23 +510,9 @@ def _parse_pdf(
                             },
                         )
                         break
-                    try:
-                        page_md = pymupdf4llm.to_markdown(doc, pages=[page_num])
-                        markdown_parts.append(page_md)
-                        last_page_parsed = page_num
-                    except (AttributeError, ValueError) as page_error:
-                        page_error_msg = str(page_error)
-                        if (
-                            "'NoneType' object has no attribute 'tables'" in page_error_msg
-                            or "not a textpage" in page_error_msg
-                        ):
-                            skipped_pages.append(page_num + 1)
-                            markdown_parts.append(
-                                f"\n\n---\n**[Page {page_num + 1} skipped due to parsing error]**\n---\n\n"
-                            )
-                            last_page_parsed = page_num
-                        else:
-                            raise
+                    page_md, _ = _convert_page_or_skip(doc, page_num, filename, skipped_pages)
+                    markdown_parts.append(page_md)
+                    last_page_parsed = page_num
 
                 markdown_text = "\n\n".join(markdown_parts)
                 if preempt_span:
@@ -494,11 +553,7 @@ def _parse_pdf(
                 # - AttributeError: "'NoneType' object has no attribute 'tables'"
                 # - ValueError: "not a textpage of this page" (threading issue)
                 error_msg = str(e)
-                if (
-                    "'NoneType' object has no attribute 'tables'" in error_msg
-                    or "not a textpage" in error_msg
-                ):
-
+                if _is_recoverable_page_error(e):
                     logger.warning(
                         "Fast parse failed, falling back to page-by-page",
                         extra={
@@ -527,43 +582,15 @@ def _parse_pdf(
                                     "total_pages": total_pages,
                                 },
                             ) as page_span:
-                                try:
-                                    # Parse single page — reuse single doc handle.
-                                    page_md = pymupdf4llm.to_markdown(doc, pages=[page_num])
-                                    markdown_parts.append(page_md)
-
-                                    if page_span:
-                                        page_span.set_attribute("status", "success")
-                                        page_span.set_attribute("markdown_length", len(page_md))
-
-                                except (AttributeError, ValueError) as page_error:
-                                    # Skip this problematic page
-                                    page_error_msg = str(page_error)
-                                    if (
-                                        "'NoneType' object has no attribute 'tables'"
-                                        in page_error_msg
-                                        or "not a textpage" in page_error_msg
-                                    ):
-                                        skipped_pages.append(page_num + 1)  # 1-indexed for user
-                                        # Add placeholder for skipped page
-                                        markdown_parts.append(
-                                            f"\n\n---\n**[Page {page_num + 1} skipped due to parsing error]**\n---\n\n"
-                                        )
-                                        logger.warning(
-                                            "Skipped page due to parsing error",
-                                            extra={
-                                                "service_name": "fast-parser",
-                                                "document_name": filename,
-                                                "page": page_num + 1,
-                                                "error_message": page_error_msg[:50],
-                                            },
-                                        )
-
-                                        if page_span:
-                                            page_span.set_attribute("status", "skipped")
-                                            page_span.set_attribute("error", page_error_msg[:100])
-                                    else:
-                                        raise  # Different error, re-raise
+                                page_md, skipped = _convert_page_or_skip(
+                                    doc, page_num, filename, skipped_pages
+                                )
+                                markdown_parts.append(page_md)
+                                if page_span:
+                                    page_span.set_attribute(
+                                        "status", "skipped" if skipped else "success"
+                                    )
+                                    page_span.set_attribute("markdown_length", len(page_md))
 
                         markdown_text = "\n\n".join(markdown_parts)
 
@@ -602,11 +629,8 @@ def _parse_pdf(
             result["metadata"]["truncated"] = "deadline"
 
         # Add skipped pages info if any
+        result["metadata"].update(_skipped_pages_metadata(skipped_pages))
         if skipped_pages:
-            result["metadata"]["skipped_pages"] = skipped_pages
-            result["metadata"][
-                "warning"
-            ] = f"Skipped {len(skipped_pages)} page(s) due to parsing errors"
             logger.warning(
                 "Parse completed with skipped pages",
                 extra={
@@ -621,6 +645,8 @@ def _parse_pdf(
         # extract images from the same open doc handle before close.
         images: List[Dict[str, Any]] = []
         images_truncated: Optional[str] = None
+        # A preempted parse is answered with 409, which carries these images with the Markdown
+        # of the same pages, so a resume that starts after them loses nothing.
         if extract_images_flag:
             with traced_operation(
                 "pdf.extract_images",
@@ -721,9 +747,12 @@ def parse_pdf_page_range(
         - start_page: Actual start page used (after clamping)
         - end_page: Actual end page used (after clamping)
 
+    A recognized single-page failure is recovered like the full document's: the range is
+    converted page by page and the damaged page becomes a placeholder, listed (one-based) in
+    ``metadata.skipped_pages``. ``pages_parsed`` is the size of the range, skipped pages included.
+
     Raises:
-        Exception: Loading or selected-range conversion failed. This function
-            does not use the full-document page-by-page retry loop.
+        Exception: Loading failed, or conversion failed for a reason other than a damaged page.
     """
     with tracer.start_as_current_span(
         "parse_pdf_page_range",
@@ -780,6 +809,7 @@ def _parse_pdf_page_range(
 
         # Build list of pages to parse (0-indexed)
         pages_to_parse = list(range(start_page, end_page))
+        skipped_pages: List[int] = []
 
         # Handle empty range
         if not pages_to_parse:
@@ -818,13 +848,33 @@ def _parse_pdf_page_range(
                 "total_pages": total_pages,
             },
         ) as span:
-            markdown_text = pymupdf4llm.to_markdown(
-                doc,
-                pages=pages_to_parse,
-                write_images=False,  # pymupdf4llm image path has layout-bug #352; we extract via direct API in extract_images() instead.
-            )
+            try:
+                markdown_text = pymupdf4llm.to_markdown(
+                    doc,
+                    pages=pages_to_parse,
+                    write_images=False,  # pymupdf4llm image path has layout-bug #352; we extract via direct API in extract_images() instead.
+                )
+            except (AttributeError, ValueError) as error:
+                # The same single-page failures /parse recovers from: convert page by page and
+                # replace the damaged one with a placeholder instead of failing the preview.
+                if not _is_recoverable_page_error(error):
+                    raise
+                logger.warning(
+                    "Page-range conversion failed, falling back to page-by-page",
+                    extra={
+                        "service_name": "fast-parser",
+                        "document_name": filename,
+                        "error_type": type(error).__name__,
+                        "error_message": str(error)[:100],
+                    },
+                )
+                markdown_text = "\n\n".join(
+                    _convert_page_or_skip(doc, page_num, filename, skipped_pages)[0]
+                    for page_num in pages_to_parse
+                )
             if span:
                 span.set_attribute("markdown_length", len(markdown_text))
+                span.set_attribute("pages_skipped", len(skipped_pages))
 
         processing_time_ms = int((time.time() - start_time) * 1000)
 
@@ -880,6 +930,7 @@ def _parse_pdf_page_range(
             "parser": "pymupdf4llm",
             "version": getattr(pymupdf4llm, "__version__", "unknown"),
         }
+        result_metadata.update(_skipped_pages_metadata(skipped_pages))
         if images_truncated:
             result_metadata["images_truncated"] = images_truncated
 
