@@ -47,4 +47,4 @@ jobs:
           cache-dependency-glob: uv.lock
       - run: uv sync --frozen --extra fast --extra dev
       - name: Run the container tests
-        run: uv run --frozen --no-sync pytest tests/container -m container -v -p no:cacheprovider
+        run: uv run --frozen --no-sync pytest tests/container -m "container and not models" -v -p no:cacheprovider

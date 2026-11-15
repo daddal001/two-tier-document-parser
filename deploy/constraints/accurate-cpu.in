@@ -1,0 +1,3 @@
+# Input for deploy/constraints/accurate-cpu.txt. Regenerate with `make constraints`.
+-e ./MinerU
+.[telemetry,telemetry-sdk]

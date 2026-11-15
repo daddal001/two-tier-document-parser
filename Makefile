@@ -1,8 +1,14 @@
-.PHONY: help install dev build build-accurate up down logs clean clean-volumes test test-unit test-integration test-container test-coverage lint format type-check coverage check hooks
+.PHONY: help install dev build build-accurate up down logs clean clean-volumes test test-unit test-integration test-container test-coverage constraints lint format type-check coverage check hooks
 
 .DEFAULT_GOAL := help
 
 COMPOSE_FILE := deploy/docker-compose.yml
+# The accurate service is profile based: CUDA when an NVIDIA GPU is visible, otherwise CPU.
+# Override with ACCURATE_PROFILE=cuda or ACCURATE_PROFILE=cpu.
+ACCURATE_PROFILE ?= $(shell command -v nvidia-smi >/dev/null 2>&1 && echo cuda || echo cpu)
+COMPOSE := docker-compose -f $(COMPOSE_FILE) --profile $(ACCURATE_PROFILE)
+# Tearing down must reach whichever profile was started.
+COMPOSE_ALL := docker-compose -f $(COMPOSE_FILE) --profile cuda --profile cpu
 # Increase timeout for model downloads during build (10-20 minutes)
 export COMPOSE_HTTP_TIMEOUT := 1800
 
@@ -10,20 +16,20 @@ export COMPOSE_HTTP_TIMEOUT := 1800
 build:
 	@echo "🔨 Building Docker images..."
 	@echo "⏳ Note: accurate-parser build includes model download (~10-20 min)"
-	docker-compose -f $(COMPOSE_FILE) build
+	$(COMPOSE) build
 
 build-accurate:
 	@echo "🔨 Building accurate-parser (includes model download, ~10-20 min)..."
-	docker-compose -f $(COMPOSE_FILE) build accurate-parser
+	$(COMPOSE) build accurate-parser-$(ACCURATE_PROFILE)
 
 up:
-	docker-compose -f $(COMPOSE_FILE) up --build -d
+	$(COMPOSE) up --build -d
 
 down:
-	docker-compose -f $(COMPOSE_FILE) down
+	$(COMPOSE_ALL) down
 
 logs:
-	docker-compose -f $(COMPOSE_FILE) logs -f
+	$(COMPOSE) logs -f
 
 # Development commands
 test:
@@ -35,8 +41,13 @@ test-unit:
 test-integration:
 	pytest tests/integration/ -v -m integration --run-integration
 
+constraints:
+	uv pip compile deploy/constraints/accurate-cpu.in --universal --python-version 3.12 \
+		--no-emit-package mineru --no-emit-package two-tier-document-parser \
+		-c deploy/constraints/mineru-compat.txt -o deploy/constraints/accurate-cpu.txt
+
 test-container:
-	pytest tests/container -v -m container
+	pytest tests/container -v -m "container and not models"
 
 test-coverage:
 	pytest tests/ -m "not integration and not models and not container" --cov=src/two_tier_parser --cov-branch --cov-report=html --cov-report=term
@@ -59,12 +70,12 @@ coverage: test-coverage
 
 # Only this project's containers and Python caches; volumes need an explicit command.
 clean:
-	docker-compose -f $(COMPOSE_FILE) down --remove-orphans
+	$(COMPOSE_ALL) down --remove-orphans
 	find . -type d \( -name "__pycache__" -o -name ".pytest_cache" -o -name ".mypy_cache" -o -name "htmlcov" \) -not -path "./MinerU/*" -not -path "./.git/*" -prune -exec rm -rf {} +
 	find . -type d -name "*.egg-info" -not -path "./MinerU/*" -prune -exec rm -rf {} +
 
 clean-volumes:
-	docker-compose -f $(COMPOSE_FILE) down --volumes --remove-orphans
+	$(COMPOSE_ALL) down --volumes --remove-orphans
 
 check:
 	black --check src/ tests/ examples/ scripts/
@@ -103,6 +114,7 @@ help:
 	@echo "  make test             - Unit and contract tests (no live services, no models)"
 	@echo "  make test-unit        - Unit tests only"
 	@echo "  make test-integration - Tests against running services"
+	@echo "  make constraints      - Regenerate the pinned dependency set of the accurate CPU image"
 	@echo "  make test-container   - Build the fast image and test it under pod-like limits (needs Docker)"
 	@echo "  make test-coverage    - Tests with coverage report"
 	@echo "  make check            - black, isort, flake8 and mypy (CI also runs every pre-commit hook)"

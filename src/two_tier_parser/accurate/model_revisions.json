@@ -1,0 +1,8 @@
+{
+  "huggingface": {
+    "jinzhenj/MinerU2.5-Pro-2605-1.2B-GGUF": "9185688a0495e1577d521a757c7c0b62dd38ca48",
+    "opendatalab/MinerU-4_models_onnx": "358310b4f64b95f9fefc372ad899356e4111f376",
+    "opendatalab/MinerU-4_models_torch": "2b3afb86f4d23fa623f6b2f4b2279ed4ef93a89d",
+    "opendatalab/MinerU2.5-Pro-2605-1.2B": "08aaea840498d49ce16247b6263196cf02814885"
+  }
+}

@@ -10,14 +10,36 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
+# The base image owns the CUDA and torch stack. Freeze it so no install below can replace it:
+# a version conflict then fails the build instead of silently swapping the stack vLLM was
+# built for. An empty freeze also fails the build.
+RUN python3 -m pip freeze --all \
+    | grep -E '^(torch|torchvision|torchaudio|triton|vllm|nvidia-[A-Za-z0-9_.-]+)==' \
+    > /opt/base-constraints.txt \
+    && test -s /opt/base-constraints.txt
+
+# Limits MinerU's own metadata does not express (see the file).
+COPY deploy/constraints/mineru-compat.txt /opt/mineru-compat.txt
+
 WORKDIR /app
 COPY MinerU /opt/MinerU
-RUN python3 -m pip install -e '/opt/MinerU[torch]' --break-system-packages
+RUN python3 -m pip install -c /opt/base-constraints.txt -c /opt/mineru-compat.txt -e '/opt/MinerU[torch]' --break-system-packages
 
 COPY pyproject.toml README.md LICENSE ./
 COPY src/ src/
-RUN python3 -m pip install -e '.[accurate,telemetry,telemetry-sdk]' --break-system-packages \
+RUN python3 -m pip install -c /opt/base-constraints.txt -c /opt/mineru-compat.txt -e '.[accurate,telemetry,telemetry-sdk]' --break-system-packages \
     && python3 -m pip cache purge
+
+COPY deploy/entrypoint-accurate.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+# Run unprivileged. The platform may force UID 1000 and set no HOME, so everything MinerU
+# writes lives under MINERU_HOME, which that user owns. The models are baked in below, as
+# that user, so they stay readable and writable markers work at run time.
+ENV MINERU_HOME=/opt/mineru \
+    HOME=/opt/mineru
+RUN mkdir -p /opt/mineru && chown 1000:1000 /opt/mineru
+USER 1000
 
 # Align the prepared repositories and serving backends with MinerU's GPU
 # deployment defaults. The model source switches to local in the entrypoint.
@@ -27,11 +49,9 @@ ENV WORKERS=2 \
     MINERU_MODEL_VLM_ENGINE=vllm \
     MINERU_DOWNLOAD_MODELS=standard
 
-RUN mineru-kit models download --tier standard --small-backend torch \
-    --vlm-engine vllm --source huggingface
-
-COPY deploy/entrypoint-accurate.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+# The download goes through the same pinned path as the entrypoint, so the weights match
+# src/two_tier_parser/accurate/model_revisions.json instead of the newest files.
+RUN MINERU_MODEL_SOURCE=huggingface python3 -m two_tier_parser.accurate.prepare_models
 
 EXPOSE 8005
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \

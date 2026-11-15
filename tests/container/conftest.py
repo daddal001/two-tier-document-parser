@@ -115,6 +115,11 @@ def network():
     docker("network", "rm", name, check=False)
 
 
+def _lowercase(headers) -> dict:
+    """Header names are case-insensitive, and servers differ in the case they send."""
+    return {name.lower(): value for name, value in headers.items()}
+
+
 class Service:
     """A running container and the host URL that reaches it."""
 
@@ -128,9 +133,9 @@ class Service:
         )
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
-                return response.status, dict(response.headers), response.read()
+                return response.status, _lowercase(response.headers), response.read()
         except urllib.error.HTTPError as error:
-            return error.code, dict(error.headers), error.read()
+            return error.code, _lowercase(error.headers), error.read()
 
     def json(self, method: str, path: str, **kwargs):
         status, headers, body = self.request(method, path, **kwargs)
@@ -165,19 +170,28 @@ class Service:
 
 
 @contextlib.contextmanager
-def run_pod(image: str, *, env: dict | None = None, network: str | None = None, flags=()):
+def run_pod(
+    image: str,
+    *,
+    env: dict | None = None,
+    network: str | None = None,
+    flags=POD_FLAGS,
+    base_env=POD_ENV,
+    port: int = 8004,
+    health_timeout: int = 90,
+):
     """Start ``image`` with the pod flags, wait for ``/health``, and remove it afterwards."""
-    name = f"gate-fast-{uuid.uuid4().hex[:8]}"
-    args = ["run", "-d", "--name", name, "-p", "127.0.0.1::8004", *POD_FLAGS, *flags]
+    name = f"gate-{port}-{uuid.uuid4().hex[:8]}"
+    args = ["run", "-d", "--name", name, "-p", f"127.0.0.1::{port}", *flags]
     if network:
         args += ["--network", network]
-    for key, value in {**POD_ENV, **(env or {})}.items():
+    for key, value in {**base_env, **(env or {})}.items():
         args += ["-e", f"{key}={value}"]
     docker(*args, image)
     try:
-        host_port = docker("port", name, "8004/tcp").splitlines()[0].rsplit(":", 1)[1]
+        host_port = docker("port", name, f"{port}/tcp").splitlines()[0].rsplit(":", 1)[1]
         service = Service(name, f"http://127.0.0.1:{host_port}")
-        deadline = time.monotonic() + 90
+        deadline = time.monotonic() + health_timeout
         while True:
             try:
                 if service.request("GET", "/health", timeout=3)[0] == 200:

@@ -8,14 +8,6 @@ updates:
     groups:
       python-minor-and-patch:
         update-types: [minor, patch]
-  - package-ecosystem: pip
-    directory: /src/two_tier_parser/accurate
-    schedule:
-      interval: weekly
-    open-pull-requests-limit: 3
-    groups:
-      accurate-minor-and-patch:
-        update-types: [minor, patch]
   - package-ecosystem: docker
     directory: /deploy
     schedule:
