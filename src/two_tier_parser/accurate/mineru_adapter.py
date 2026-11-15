@@ -139,12 +139,15 @@ def _raw_base64(value: str) -> str:
 def _page_sizes(pdf_bytes: bytes) -> list[tuple[float, float]]:
     """Return each page's (width, height) in points, as the PDF displays it."""
     import pypdfium2 as pdfium
+    from docvortex.document.pdf.pdfium import pdfium_guard
 
-    document = pdfium.PdfDocument(pdf_bytes)
-    try:
-        return [tuple(document[index].get_size()) for index in range(len(document))]
-    finally:
-        document.close()
+    # Share MinerU's lock: PDFium cannot run concurrently even on different documents.
+    with pdfium_guard():
+        document = pdfium.PdfDocument(pdf_bytes)
+        try:
+            return [tuple(document[index].get_size()) for index in range(len(document))]
+        finally:
+            document.close()
 
 
 def _page_bbox(bbox: Any, sizes: list[tuple[float, float]], page: int) -> list[float]:

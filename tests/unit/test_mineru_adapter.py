@@ -1,13 +1,35 @@
 """MinerU 4 compatibility contracts without downloading model weights."""
 
 import sys
+import threading
 import types
+from contextlib import contextmanager
 
 import pytest
 
 from two_tier_parser.accurate import mineru_adapter as adapter
 
 REAL_PAGE_SIZES = adapter._page_sizes  # the fixture below replaces it for every other test
+
+
+@pytest.fixture(autouse=True)
+def shared_pdfium_guard(monkeypatch):
+    lock = threading.RLock()
+    state = {"held": False}
+
+    @contextmanager
+    def guard():
+        with lock:
+            state["held"] = True
+            try:
+                yield
+            finally:
+                state["held"] = False
+
+    module = types.ModuleType("docvortex.document.pdf.pdfium")
+    module.pdfium_guard = guard
+    monkeypatch.setitem(sys.modules, "docvortex.document.pdf.pdfium", module)
+    return state
 
 
 @pytest.fixture(autouse=True)
@@ -249,6 +271,46 @@ def test_page_sizes_come_from_the_pdf_in_points(monkeypatch):
 
     assert adapter._page_sizes(b"pdf bytes") == [(576.0, 782.5), (300.0, 400.0)]
     assert Document.closed
+
+
+@pytest.mark.parametrize("conversion_fails", [False, True])
+def test_page_sizes_hold_the_shared_guard_through_cleanup(
+    monkeypatch, shared_pdfium_guard, conversion_fails
+):
+    closed = []
+
+    class Document:
+        def __init__(self, data):
+            assert shared_pdfium_guard["held"], "PDFium opened without its shared guard"
+
+        def __len__(self):
+            assert shared_pdfium_guard["held"]
+            return 1
+
+        def __getitem__(self, index):
+            assert shared_pdfium_guard["held"]
+            return self
+
+        def get_size(self):
+            assert shared_pdfium_guard["held"]
+            if conversion_fails:
+                raise ValueError("unreadable page")
+            return (600.0, 800.0)
+
+        def close(self):
+            assert shared_pdfium_guard["held"], "PDFium closed outside its shared guard"
+            closed.append(True)
+
+    pdfium = types.ModuleType("pypdfium2")
+    pdfium.PdfDocument = Document
+    monkeypatch.setitem(sys.modules, "pypdfium2", pdfium)
+    if conversion_fails:
+        with pytest.raises(ValueError, match="unreadable page"):
+            REAL_PAGE_SIZES(b"pdf")
+    else:
+        assert REAL_PAGE_SIZES(b"pdf") == [(600.0, 800.0)]
+    assert closed == [True]
+    assert not shared_pdfium_guard["held"]
 
 
 # ---- Markdown refers to images instead of embedding them ----
