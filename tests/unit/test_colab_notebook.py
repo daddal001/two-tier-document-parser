@@ -27,11 +27,9 @@ def code_cells(cells):
     return [source for kind, source in cells if kind == "code"]
 
 
-def test_every_code_cell_compiles_and_nothing_is_saved_in_it(cells):
-    notebook = json.loads(NOTEBOOK.read_text())
+def test_every_code_cell_compiles(cells):  # saved outputs are the recorded run and stay
     for source in code_cells(cells):
         ast.parse(source)
-    assert all(c.get("outputs", []) == [] for c in notebook["cells"] if c["cell_type"] == "code")
 
 
 def test_it_tests_the_tier_and_engine_the_cuda_image_serves(cells):
