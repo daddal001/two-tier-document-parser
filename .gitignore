@@ -24,6 +24,7 @@ wheels/
 # Virtual Environments
 venv/
 .venv/
+.venv.nosync/
 env/
 
 # Jupyter Notebooks

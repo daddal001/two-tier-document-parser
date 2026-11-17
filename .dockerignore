@@ -12,6 +12,7 @@
 .claude
 .codeql-cache
 .venv
+.venv.nosync
 .mypy_cache
 .pytest_cache
 .coverage
