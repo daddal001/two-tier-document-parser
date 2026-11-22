@@ -38,9 +38,12 @@ def test_it_tests_the_tier_and_engine_the_cuda_image_serves(cells):
     assert 'TIER = "standard"' in text  # on CUDA the service always selects the vision model
     assert '"MINERU_MODEL_VLM_ENGINE": "vllm"' in text
     assert "deploy/constraints/accurate-gpu.txt" in text
-    assert (
-        "-c deploy/constraints/vllm-base.txt" in text
-    )  # vLLM's dependencies stay at the base image's versions
+    # vLLM's dependencies stay at the base image's versions (vllm-base.txt) ...
+    assert "deploy/constraints/vllm-base.txt" in text
+    assert "-c {WORK}/base-constraints.txt" in text
+    # ... except OpenTelemetry: vLLM 0.34.0 needs >=1.45.1 while the base image ships 1.40.0, so
+    # constraining to the base makes the install unsatisfiable (it failed on a Colab T4).
+    assert 'not line.startswith("opentelemetry")' in text
 
 
 def test_it_installs_the_same_fixed_pillow_as_the_cuda_image(cells):
