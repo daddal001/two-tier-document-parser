@@ -1082,9 +1082,9 @@ After successful testing:
    docker push gcr.io/YOUR_PROJECT/accurate-parser:v1.0.0
    ```
 
-2. **Update Kubernetes manifests** (in private repo)
+2. **Update the image tag in your Kubernetes manifests**
 
-3. **Deploy to GKE** (see main deployment docs)
+3. **Deploy to GKE** (see "Production Deployment" in `docs/DOCKER_SETUP.md`)
 
 4. **Set up monitoring** (Prometheus, Grafana)
 

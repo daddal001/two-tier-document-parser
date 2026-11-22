@@ -659,12 +659,28 @@ uvicorn app:app --host 0.0.0.0 --port 8005 --reload
 
 ## Production Deployment
 
-See the private `document_agent_v0.2` repository for:
-- Kubernetes manifests
-- Horizontal Pod Autoscaling configuration
-- Network policies
-- Monitoring setup
-- CI/CD workflows
+This repository provides the images and the contract they follow. Manifests, autoscaling,
+network policy, monitoring and pipelines belong to whatever runs them. What to configure:
+
+- **Images.** `deploy/Dockerfile.fast` (port 8004), `deploy/Dockerfile.accurate.cpu` and
+  `deploy/Dockerfile.accurate` for CUDA (port 8005). Pin an image by digest, not by tag.
+- **Pod security.** Both services run as UID 1000 and work with a read-only root filesystem, a
+  writable `/tmp` and every capability dropped. The accurate images keep everything MinerU
+  writes under `MINERU_HOME`, which that user owns.
+- **Health.** `GET /health` on each service, which the images also use as their Docker
+  healthcheck. The CPU accurate image downloads its models on first start into `/models`: mount
+  a volume there so that happens once. The CUDA image has them built in.
+- **Capacity.** A service that cannot take more work answers `503` with `Retry-After` instead of
+  queueing without limit, so callers should retry. `WORKERS`, `PAGES_WORKERS` and
+  `MAX_INFLIGHT_DOCUMENTS` set the limits (see "Full-document backpressure" in the README).
+  With six concurrent requests, 4 CPUs and a 3 GiB limit, the fast image peaked at about 2 GiB.
+- **Shutdown.** On `SIGTERM` the services drain in-flight work for `SHUTDOWN_DRAIN_SECONDS`
+  (10 by default) and then stop their workers. Keep the orchestrator's grace period longer.
+- **Observability.** `/metrics` exports Prometheus series (see the README). Set
+  `OTEL_EXPORTER_OTLP_ENDPOINT` to export traces.
+- **Access.** The services do not authenticate callers. Put them behind your own access control
+  and network policy, and set `PARSER_ALLOWED_BUCKETS` so a claim-check request can only read
+  the buckets you intend.
 
 ## API Documentation
 
