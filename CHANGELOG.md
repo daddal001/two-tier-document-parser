@@ -22,12 +22,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   recorded commits are unchanged. The `docvortex<0.6.8` limit in
   `deploy/constraints/mineru-compat.txt` is removed, because MinerU 4.2.3 requires
   `docvortex>=0.6.24,<0.7` itself.
-- The CUDA image uses vLLM 0.34.0 (it was 0.21.0), which brings torch 2.14.0 and a newer set of
-  base packages; its pinned dependencies are recompiled from it. The pins that had published
-  advisories fell from 16 packages (145 advisories) to one (`setuptools`, see
-  `deploy/constraints/accurate-gpu.in`). MinerU 4.2.3 declares vLLM `<0.31.0`, so this
-  combination is outside what MinerU has declared; the T4 notebook is the check that it works.
-  `openai` is held below 3 because MinerU requires it. No CUDA 12.9 image exists for 0.34.0.
+- The CUDA image uses vLLM 0.32.0 (it was 0.21.0), with torch 2.13.0; its pinned dependencies are
+  recompiled from that base. MinerU 4.2.3 declares vLLM `<0.31.0`, so this is outside what
+  MinerU has declared; 0.32.0 is the first release past that cap with no published advisories
+  (0.30.0 has 21, 0.31.0 has 16). Do not move to 0.34.0 or later without a T4 run: they removed
+  `vllm.v1.sample.logits_processor`, which `mineru-vl-utils` imports, and the vision-language
+  model then fails to load (found on a Colab T4). Every `vllm` import in MinerU,
+  `mineru-vl-utils` and this service was checked to resolve in the 0.32.0 image; the engine
+  itself can only be checked on a GPU. The pins that had published advisories fell from 16
+  packages (145 advisories) to one (`setuptools`, which vLLM caps below 81; see
+  `deploy/constraints/accurate-gpu.in`): security floors lift `certifi` (a critical advisory
+  about compromised root certificates), `dnspython` and OpenTelemetry above the base's releases.
+  `openai` is held below 3 because MinerU requires it. A CUDA 12.9 host can use the
+  `v0.32.0-cu129` base tag (the last release with one).
 - Vulnerability scans are part of the test suite (`tests/security`, also `make test-security`):
   Trivy over the repository files and the fast and CPU images, and OSV-Scanner over `uv.lock` and
   the two image pin sets. They need Docker and a network, so the pre-commit test hook leaves

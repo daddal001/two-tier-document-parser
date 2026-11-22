@@ -45,24 +45,21 @@ BASE = ROOT / "deploy/constraints/vllm-base.txt"
 # else drifting means the compile started from something other than the base, which puts the
 # image on versions vLLM was never run with.
 INTENTIONAL_CHANGES = {
-    "pillow": "security: the base's 12.x has published advisories, 13.0.0 fixes them",
-    "transformers": "MinerU 4 needs >=5.10.1",
-    "tokenizers": "required by the newer transformers",
-    "safetensors": "required by the newer transformers",
-    "urllib3": "the service imports it directly and sets a security floor (pyproject.toml)",
-    "starlette": "required by the newer web-UI and API dependencies MinerU installs",
-    "prometheus-fastapi-instrumentator": "required with the newer starlette",
     "modelscope": "MinerU 4.2 needs >=1.39.1",
     "openai": "MinerU 4.2 needs <3; the base ships 3.x, and vLLM accepts >=2.25",
+    "certifi": "security: the base's 2026.7.22 bundles compromised root certificates; fixed in 2026.10.18",
+    "dnspython": "security: the base's 2.9.0 has a denial-of-service advisory; fixed in 2.9.2",
     **{
-        name: "vLLM 0.34.0 requires >=1.45.1, but its base image ships 1.40.0 (the base's own "
-        "pip check fails on it); the pins follow vLLM, and the tracing extras need the same line"
+        name: "security floor: the base's 1.40 line has denial-of-service advisories (fixed in "
+        "1.45.2), and the rest of OpenTelemetry has to move to the same release line with it"
         for name in (
             "opentelemetry-api",
             "opentelemetry-sdk",
             "opentelemetry-proto",
             "opentelemetry-semantic-conventions",
+            "opentelemetry-exporter-http-transport",
             "opentelemetry-exporter-otlp",
+            "opentelemetry-exporter-otlp-common",
             "opentelemetry-exporter-otlp-proto-common",
             "opentelemetry-exporter-otlp-proto-grpc",
             "opentelemetry-exporter-otlp-proto-http",
@@ -95,6 +92,9 @@ def test_the_pins_change_only_what_the_base_image_does_not_already_satisfy():
     assert (
         not unexpected
     ), f"pins moved away from the vLLM base image without a recorded reason: {unexpected}"
+    # A reason for a pin that no longer differs from the base is a stale claim: drop it.
+    stale = sorted(set(INTENTIONAL_CHANGES) - set(drift))
+    assert not stale, f"reasons recorded for pins that match the base image: {stale}"
 
 
 def test_the_base_freeze_holds_no_native_packages_and_names_its_image():
@@ -106,3 +106,23 @@ def test_the_base_freeze_holds_no_native_packages_and_names_its_image():
     assert not re.search(
         r"^(torch|torchvision|torchaudio|triton|vllm)==|^(nvidia-|cuda-)", text, re.M
     )
+    assert not LOCAL_BUILD.search(text), "a locally built package belongs to the base image"
+
+
+# A version with a local tag (+cu130) is a build from the base image's own index, such as
+# torchcodec, which vLLM requires. PyPI's plain build of the same version must not replace it.
+LOCAL_BUILD = re.compile(r"^[A-Za-z0-9_.-]+==[^\s;]*\+", re.M)
+
+
+def test_no_package_the_base_built_for_cuda_is_replaced_by_the_pins():
+    assert not LOCAL_BUILD.search((ROOT / "deploy/constraints/accurate-gpu.txt").read_text())
+
+
+def test_the_image_freezes_every_package_the_base_built_for_cuda():
+    dockerfile = (ROOT / "deploy/Dockerfile.accurate").read_text()
+    freeze = re.search(r"grep -E '([^']+)'", dockerfile)[1]  # what the build keeps as constraints
+
+    for line in ("torch==2.13.0+cu130", "torchcodec==0.17.0+cu130", "nvidia-nccl-cu13==2.31.2"):
+        assert re.search(freeze, line), f"{line} is not frozen by the Dockerfile"
+    for line in ("numpy==2.2.6", "fastapi==0.136.3"):
+        assert not re.search(freeze, line), f"{line} should stay installable by the pins"

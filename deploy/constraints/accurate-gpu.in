@@ -1,7 +1,17 @@
 # Linux CUDA runtime. Keep vLLM aligned with deploy/Dockerfile.accurate.
-# Known exception: setuptools stays at 80.10.2 because vLLM 0.34.0 requires setuptools<81. The
+# Known exception: setuptools stays at 80.10.2 because vLLM 0.32.0 requires setuptools<81. The
 # three advisories against it (fixed in 83.0.0 and 84.1.0) concern building source distributions
 # and legacy wheel installs on Windows, which this Linux runtime image does not do.
 -e ./MinerU[torch]
 .[accurate,telemetry,telemetry-sdk]
-vllm==0.34.0
+vllm==0.32.0
+# Security floors: the base image ships older releases with published advisories. certifi
+# 2026.7.22 bundles root certificates with compromised intermediate keys (fixed in 2026.10.18);
+# dnspython 2.9.0 and opentelemetry-api 1.40.0 have denial-of-service advisories (fixed in 2.9.2
+# and 1.45.2). The compile lifts the rest of OpenTelemetry to the same release line. Known cost:
+# pip check then also reports two base packages this service does not use (lmcache asks for
+# opentelemetry-api<=1.40.0, the Prometheus exporter for sdk~=1.40); the base's own pip check
+# already fails on other packages.
+certifi>=2026.10.18
+dnspython>=2.9.2
+opentelemetry-api>=1.45.2

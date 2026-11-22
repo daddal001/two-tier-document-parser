@@ -25,7 +25,11 @@ OUTPUT = ROOT / "deploy/constraints/accurate-gpu.txt"
 BASE_FREEZE = ROOT / "deploy/constraints/vllm-base.txt"
 DOCKERFILE = ROOT / "deploy/Dockerfile.accurate"
 # These distributions are supplied by the vLLM image, including its CUDA-specific wheel builds.
-BASE_PACKAGES = re.compile(r"^(torch|torchvision|torchaudio|triton|vllm)==|^(nvidia-|cuda-)")
+# A version with a local tag (+cu130) is one of those builds, such as torchcodec, which vLLM
+# requires: PyPI's plain build of the same version must not replace it.
+BASE_PACKAGES = re.compile(
+    r"^(torch|torchvision|torchaudio|triton|vllm)==|^(nvidia-|cuda-)|^[A-Za-z0-9_.-]+==[^\s;]*\+"
+)
 
 
 def refresh_base() -> None:

@@ -1,11 +1,13 @@
 # MinerU 4 GPU runtime. The base image supplies the vLLM/CUDA stack; CPU-only deployments use
 # Dockerfile.accurate.cpu. MinerU 4.2.3 declares vLLM >=0.19.1,<0.31.0, and this image runs
-# v0.34.0 (the newest, with no published advisories), which MinerU has not declared support for:
-# the installs below use --no-deps, so nothing enforces that range. The T4 notebook
-# (examples/notebooks/accurate_t4_check.ipynb) is the check that it works.
-FROM vllm/vllm-openai:v0.34.0
-# vLLM publishes no CUDA 12.9 image for v0.34.0 (the last tag with one is v0.32.0-cu129, which
-# would need its own constraint files).
+# v0.32.0, the first release past that cap with no published advisories (0.30.0 has 21, 0.31.0
+# has 16). The installs below use --no-deps, so nothing enforces the range; the T4 notebook
+# (examples/notebooks/accurate_t4_check.ipynb) is the check that it works. Do not move to
+# v0.34.0 or later without that check: they removed vllm.v1.sample.logits_processor, which
+# mineru-vl-utils imports, and the VLM then fails to load ("Please install vllm>=0.19.1,<0.31.0").
+FROM vllm/vllm-openai:v0.32.0
+# For hosts using CUDA 12.9, replace the line above with:
+# FROM vllm/vllm-openai:v0.32.0-cu129
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     fonts-noto-core fonts-noto-cjk fontconfig libgl1 \
@@ -15,9 +17,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # The base image owns the CUDA and torch stack. Freeze it so no install below can replace it:
 # a version conflict then fails the build instead of silently swapping the stack vLLM was
-# built for. An empty freeze also fails the build.
+# built for. That includes any package whose version has a local tag (+cu130), the base's own
+# CUDA builds such as torchcodec. An empty freeze also fails the build.
 RUN python3 -m pip freeze --all \
-    | grep -E '^(torch|torchvision|torchaudio|triton|vllm|(nvidia|cuda)-[A-Za-z0-9_.-]+)==' \
+    | grep -E '^(torch|torchvision|torchaudio|triton|vllm|(nvidia|cuda)-[A-Za-z0-9_.-]+)==|^[A-Za-z0-9_.-]+==[^=]*[+]' \
     > /opt/base-constraints.txt \
     && test -s /opt/base-constraints.txt
 
