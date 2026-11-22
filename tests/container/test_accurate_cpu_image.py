@@ -23,6 +23,8 @@ import time
 import pytest
 from pypdf import PdfReader, PdfWriter
 
+from tests.boxes import is_the_same_picture
+
 from .conftest import ROOT, SAMPLE_PDF, docker, run_pod
 
 pytestmark = [pytest.mark.container, pytest.mark.models]
@@ -254,15 +256,6 @@ def test_the_models_on_disk_are_the_pinned_commits(accurate):
     assert commits == [pinned]
 
 
-def overlap(a, b):
-    """Intersection over union of two boxes given as [x0, y0, x1, y1]."""
-    width = max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
-    height = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
-    inter = width * height
-    area = lambda box: (box[2] - box[0]) * (box[3] - box[1])  # noqa: E731
-    return inter / (area(a) + area(b) - inter)
-
-
 def test_images_are_raw_base64_with_boxes_in_page_points(accurate):
     pymupdf = pytest.importorskip("pymupdf")
     writer = PdfWriter()
@@ -280,9 +273,10 @@ def test_images_are_raw_base64_with_boxes_in_page_points(accurate):
         raw = base64.b64decode(image["image_base64"], validate=True)  # a data URI would fail
         assert raw[:3] == b"\xff\xd8\xff" or raw[:4] == b"\x89PNG", "not image bytes"
         # PyMuPDF knows where each image really sits on the page, in points. The service's box
-        # comes from a layout model, so it must overlap the real one closely, not match it.
+        # comes from a layout model that crops to the visible figure, so it must lie inside the
+        # real image and cover most of it, not match it exactly (see tests/boxes.py).
         real = [list(info["bbox"]) for info in document[image["page"]].get_image_info()]
-        assert max(overlap(image["bbox"], box) for box in real) > 0.85, image["bbox"]
+        assert any(is_the_same_picture(image["bbox"], box) for box in real), (image["bbox"], real)
 
 
 def test_a_model_volume_older_than_the_pin_is_refused_not_served(accurate_image, tmp_path):
@@ -333,17 +327,66 @@ def test_a_model_volume_older_than_the_pin_is_refused_not_served(accurate_image,
     assert "not at the pinned revision" in result.stderr
 
 
+CONSISTENCY_CHECK = """
+import importlib.metadata as m
+from packaging.requirements import Requirement
+
+def key(name):
+    return name.lower().replace("_", "-").replace(".", "-")
+
+installed = {key(d.metadata["Name"]): d.version for d in m.distributions()}
+for dist in m.distributions():
+    for line in dist.requires or []:
+        requirement = Requirement(line)
+        if requirement.marker and not requirement.marker.evaluate({"extra": ""}):
+            continue
+        have = installed.get(key(requirement.name))
+        if have is None:
+            print(f"{dist.metadata['Name']} requires {requirement.name}, which is not installed")
+        elif not requirement.specifier.contains(have, prereleases=True):
+            print(f"{dist.metadata['Name']} requires {line}, but {requirement.name} {have} is installed")
+"""
+
+
+def test_the_installer_is_not_in_the_image(accurate_image):
+    # Nothing installs packages at run time; leaving pip out removes its vendored libraries
+    # (which scanners report) and a way to add code to a running container.
+    result = subprocess.run(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "--entrypoint",
+            "python",
+            accurate_image,
+            "-m",
+            "pip",
+            "--version",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode != 0 and "No module named pip" in result.stderr
+
+
 def test_the_installed_set_is_consistent_except_for_the_deliberate_pillow_cap(accurate_image):
     """The pinned set is installed without resolving, so check what resolving would have caught.
 
     gradio (MinerU's web UI, never imported here) says Pillow must stay below 13; the image
-    deliberately has 13 because Pillow decodes untrusted PDFs' images. That is the only
-    disagreement allowed.
+    deliberately has 13 because Pillow decodes untrusted PDFs' images. The other disagreement
+    allowed is a package that asks for pip, setuptools or wheel (modelscope asks for
+    setuptools): the image removes them, because nothing installs packages at run time.
     """
-    report = run_in_image(accurate_image, "pip", "check", check=False)
-    problems = [line for line in report.splitlines() if line.strip() and "No broken" not in line]
+    # pip is not in the image, so this is what ``pip check`` does: every requirement of every
+    # installed distribution (extras off) must be installed at an accepted version.
+    report = run_in_image(accurate_image, "python", "-c", CONSISTENCY_CHECK, check=False)
+    problems = [line for line in report.splitlines() if line.strip()]
+    removed_installer = re.compile(r"requires (pip|setuptools|wheel), which is not installed$")
 
-    assert all("pillow" in line.lower() for line in problems), problems
+    assert all(
+        "pillow" in line.lower() or removed_installer.search(line) for line in problems
+    ), problems
     version = run_in_image(
         accurate_image, "python", "-c", "import PIL; print(PIL.__version__)"
     ).strip()

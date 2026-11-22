@@ -1,4 +1,7 @@
 # Linux CUDA runtime. Keep vLLM aligned with deploy/Dockerfile.accurate.
+# Known exception: setuptools stays at 80.10.2 because vLLM 0.34.0 requires setuptools<81. The
+# three advisories against it (fixed in 83.0.0 and 84.1.0) concern building source distributions
+# and legacy wheel installs on Windows, which this Linux runtime image does not do.
 -e ./MinerU[torch]
 .[accurate,telemetry,telemetry-sdk]
-vllm==0.21.0
+vllm==0.34.0

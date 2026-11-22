@@ -12,7 +12,7 @@ version: "1.4.0"
 # Two-Tier Document Parser 📄🚀
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
-[![Python 3.11+ service runtime](https://img.shields.io/badge/service_python-3.11+-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.12+ service runtime](https://img.shields.io/badge/service_python-3.12+-blue.svg)](https://www.python.org/downloads/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.121.2+-009688.svg?style=flat&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
 [![Docker](https://img.shields.io/badge/Docker-Enabled-blue.svg?logo=docker)](https://www.docker.com/)
 [![MinerU](https://img.shields.io/badge/MinerU-Powered-orange)](https://github.com/opendatalab/MinerU)
@@ -102,8 +102,8 @@ Services will be available at:
 
 ### Python Package
 
-For local fast-parser development, use Python 3.11 or newer (required by process
-pool recycling), from the repository root:
+For local fast-parser development, use Python 3.14 (the version the images run; 3.12 and 3.13 also
+work), from the repository root:
 
 ```bash
 python -m venv .venv

@@ -7,7 +7,7 @@ name = "two_tier_document_parser"
 version = "1.0.0"
 description = "A production-ready, two-tier document parsing API for RAG pipelines"
 readme = "README.md"
-requires-python = ">=3.11,<3.13"
+requires-python = ">=3.12,<3.15"
 authors = [
     { name = "Daddal" }
 ]
@@ -32,8 +32,9 @@ classifiers = [
     "License :: OSI Approved :: GNU Affero General Public License v3",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Topic :: Text Processing :: Markup",
     "Topic :: Software Development :: Libraries :: Python Modules",
@@ -53,9 +54,11 @@ dependencies = [
 
 [project.optional-dependencies]
 # pymupdf4llm>=0.3.0 auto-bundles pymupdf-layout (GNN layout analysis).
+# Held below 2: 2.1 wraps text it reads inside pictures in <!-- Start of picture text --> blocks
+# (64 lines changed on the sample paper), which changes the Markdown callers receive.
 fast = [
-    "pymupdf4llm>=0.3.0",
-    "pymupdf>=1.26",
+    "pymupdf4llm>=0.3.0,<2",
+    "pymupdf>=1.26,<2",
     "prometheus-client>=0.19",  # /metrics body; the service starts without it but exports nothing
 ]
 accurate = [
@@ -113,7 +116,7 @@ where = ["src"]
 
 [tool.black]
 line-length = 100
-target-version = ['py311', 'py312']
+target-version = ['py312', 'py313', 'py314']
 include = '\.pyi?$'
 extend-exclude = '''
 /(
@@ -180,7 +183,7 @@ exclude_lines = [
 ]
 
 [tool.mypy]
-# No python_version pin: mypy targets the interpreter that runs it, so the 3.11 and 3.12 CI
+# No python_version pin: mypy targets the interpreter that runs it, so the 3.12 and 3.14 CI
 # jobs each check against their own dependency stubs.
 warn_return_any = true
 warn_unused_configs = true

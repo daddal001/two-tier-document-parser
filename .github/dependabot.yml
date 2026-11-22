@@ -14,8 +14,9 @@ updates:
       interval: weekly
     open-pull-requests-limit: 3
     ignore:
-      # The package supports Python 3.11 and 3.12 (requires-python); a newer base image
-      # cannot install it. Patch updates of the supported minor still arrive.
+      # The services run on Python 3.14 and the package supports 3.12 to 3.14 (requires-python);
+      # 3.15 cannot install yet (onnxruntime and pyyaml have no 3.15 wheels). Patch updates of
+      # the supported minor still arrive.
       - dependency-name: python
         update-types: [version-update:semver-major, version-update:semver-minor]
       # The GPU base image is chosen to match the pinned MinerU release, and it can only be

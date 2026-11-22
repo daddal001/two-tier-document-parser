@@ -42,16 +42,13 @@ test-integration:
 	pytest tests/integration/ -v -m integration --run-integration
 
 constraints:
-	uv pip compile deploy/constraints/accurate-cpu.in --universal --python-version 3.12 \
+	uv pip compile deploy/constraints/accurate-cpu.in --universal --python-version 3.14 \
 		--no-emit-package mineru --no-emit-package two-tier-document-parser \
 		-c deploy/constraints/mineru-compat.txt --override deploy/constraints/overrides.txt \
 		-o deploy/constraints/accurate-cpu.txt
 
 test-container:
 	pytest tests/container -v -m "container and not models"
-
-constraints-gpu:
-	python scripts/compile_gpu_constraints.py
 
 test-coverage:
 	pytest tests/ -m "not integration and not models and not container" --cov=src/two_tier_parser --cov-branch --cov-report=html --cov-report=term

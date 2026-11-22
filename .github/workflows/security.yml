@@ -39,7 +39,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+      - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
       - name: Audit the locked dependencies
         run: |
           uv export --frozen --no-hashes --no-emit-project --all-extras -o "$RUNNER_TEMP/locked.txt"
@@ -49,8 +49,14 @@ jobs:
         if: ${{ !cancelled() }}
         run: uvx --from pip-audit==2.10.1 pip-audit --disable-pip --no-deps -r deploy/constraints/accurate-cpu.txt
       - name: Audit the accurate GPU image's pinned Python set
+        # The setuptools advisories are accepted on purpose (vLLM requires setuptools<81); the
+        # reason and the expiry date are in osv-scanner.toml, which pip-audit does not read.
         if: ${{ !cancelled() }}
-        run: uvx --from pip-audit==2.10.1 pip-audit --disable-pip --no-deps -r deploy/constraints/accurate-gpu.txt
+        run: >
+          uvx --from pip-audit==2.10.1 pip-audit --disable-pip --no-deps
+          --ignore-vuln GHSA-h35f-9h28-mq5c --ignore-vuln PYSEC-2026-3447
+          --ignore-vuln GHSA-xmj3-9gf7-h52w
+          -r deploy/constraints/accurate-gpu.txt
 
   code:
     # Static analysis of the service code, the Dockerfiles, the workflows and any committed secret.
@@ -60,7 +66,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+      - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
       - name: Run Semgrep
         run: >
           uvx --from semgrep==1.183.0 semgrep scan --error --metrics=off

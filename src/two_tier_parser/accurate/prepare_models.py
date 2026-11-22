@@ -107,16 +107,19 @@ def pin_huggingface_downloads(
 ) -> None:
     """Make MinerU's Hugging Face downloader fetch the recorded commits.
 
-    MinerU's downloader has no revision option and reads the repository's newest files, so
-    its two Hugging Face entry points are wrapped to pass the pinned commit: the snapshot
-    download, and the file listing it uses to check the download is complete. A repository
-    with no recorded commit is refused unless ``allow_unpinned`` is set.
+    MinerU's downloader asks Hugging Face for a repository's newest state: one ``model_info``
+    call gives both the file list it checks the download against and the revision (``sha``) it
+    then downloads. Its two Hugging Face entry points are wrapped to pass the pinned commit
+    instead: ``model_info``, so the list and the revision are the pinned ones, and the snapshot
+    download itself, so the bytes are the pinned ones even if MinerU stops using ``sha``. A
+    repository with no recorded commit is refused unless ``allow_unpinned`` is set.
     """
     from mineru.model import download
 
-    # shortcut: this wraps two module-level names in MinerU's downloader because it offers no
-    # revision option. The submodule is pinned, a missing name fails here instead of silently
-    # downloading unpinned, and the container tests cover a real download.
+    # shortcut: this wraps two module-level names in MinerU's downloader because it takes its
+    # revision from the repository's newest state and offers no option to choose one. The
+    # submodule is pinned, a missing name fails here instead of silently downloading unpinned,
+    # and the container tests cover a real download.
     real_snapshot = getattr(download, "hf_snapshot_download", None)
     real_api = getattr(download, "HfApi", None)
     if real_snapshot is None or real_api is None:
@@ -142,11 +145,11 @@ def pin_huggingface_downloads(
         return real_snapshot(repo_id, **kwargs)
 
     class PinnedHfApi(real_api):  # type: ignore[valid-type, misc]
-        def list_repo_files(self, repo_id: str, **kwargs: Any) -> Any:
+        def model_info(self, repo_id: str, **kwargs: Any) -> Any:
             revision = revision_for(repo_id)
             if revision:
                 kwargs.setdefault("revision", revision)
-            return super().list_repo_files(repo_id, **kwargs)
+            return super().model_info(repo_id, **kwargs)
 
     download.hf_snapshot_download = snapshot_download
     download.HfApi = PinnedHfApi
@@ -181,7 +184,7 @@ def main() -> None:
         os.environ["MINERU_CONFIG"] = legacy_config
 
     resolve_device_mode()
-    from mineru.config import config
+    from mineru.config import get_config
     from mineru.model.download import verify_model_repo
     from mineru.model.registry import model_repos_for_tier
 
@@ -192,7 +195,7 @@ def main() -> None:
     tier = requested_tier(
         os.getenv("MINERU_DOWNLOAD_MODELS", "all"), gpu_available=_gpu_available()
     )
-    source = os.getenv("MINERU_MODEL_SOURCE", config.model.source)
+    source = os.getenv("MINERU_MODEL_SOURCE", get_config().model.source)
     repos = model_repos_for_tier(tier)
     if not repos:
         raise RuntimeError(f"MinerU did not select model repositories for tier {tier!r}")

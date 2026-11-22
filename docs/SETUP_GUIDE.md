@@ -69,7 +69,7 @@ docker-compose -f deploy/docker-compose.yml down
 
 ### Option 3: Install as Python Package (Development)
 
-Use Python 3.11+ for the fast service. Accurate-parser's model and native
+Use Python 3.14 for the fast service (3.12 and 3.13 also work). Accurate-parser's model and native
 dependencies are provided by the Docker setup above.
 
 ```bash

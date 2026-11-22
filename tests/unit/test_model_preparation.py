@@ -52,13 +52,17 @@ def _install_fake_mineru(monkeypatch, repos, configured_source="huggingface"):
         "mineru.model.download": types.ModuleType("mineru.model.download"),
         "mineru.model.registry": types.ModuleType("mineru.model.registry"),
     }
-    modules["mineru.config"].config = config
+    modules["mineru.config"].get_config = lambda: config
     download = modules["mineru.model.download"]
     download.verify_model_repo = lambda repo: types.SimpleNamespace(
         ready=not repo.missing, missing_paths=list(repo.missing)
     )
     download.hf_snapshot_download = lambda repo_id, **kwargs: "/models/" + repo_id
-    download.HfApi = type("HfApi", (), {"list_repo_files": lambda self, repo_id, **kw: []})
+    download.HfApi = type(
+        "HfApi",
+        (),
+        {"model_info": lambda self, repo_id, **kw: types.SimpleNamespace(sha="", siblings=[])},
+    )
     tiers = []
 
     def model_repos_for_tier(tier):

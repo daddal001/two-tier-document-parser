@@ -59,7 +59,7 @@ Be respectful and inclusive. We welcome contributions from everyone.
 git clone https://github.com/daddal001/two_tier_document_parser.git
 cd two_tier_document_parser
 
-# Use Python 3.11+ for fast-parser process pool recycling
+# Use Python 3.14, the version the fast-parser image runs
 python -m venv .venv
 source .venv/bin/activate
 pip install -e '.[fast,telemetry,dev]'

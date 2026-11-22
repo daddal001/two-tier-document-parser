@@ -1,21 +1,21 @@
 {
-  "version": "2.27.4",
+  "version": "2.27.5",
   "assets": {
     "codeql-bundle-linux-arm64.tar.gz": {
-      "url": "https://github.com/github/codeql-action/releases/download/codeql-bundle-v2.27.4/codeql-bundle-linux-arm64.tar.gz",
-      "sha256": "7dd066f805dfed19c9c4323d5f2003cd24fabd6e7304cdf799b94a84509fe92b"
+      "url": "https://github.com/github/codeql-action/releases/download/codeql-bundle-v2.27.5/codeql-bundle-linux-arm64.tar.gz",
+      "sha256": "6f6d9d761cb558f0506acee422ea8f7e38e83d8c1010ad6e676e3bcd56471cca"
     },
     "codeql-bundle-linux64.tar.gz": {
-      "url": "https://github.com/github/codeql-action/releases/download/codeql-bundle-v2.27.4/codeql-bundle-linux64.tar.gz",
-      "sha256": "89ed56c8ec6bfccef6a0d2e7fe86da0469ca24b4db08b88016ec134b942c17a4"
+      "url": "https://github.com/github/codeql-action/releases/download/codeql-bundle-v2.27.5/codeql-bundle-linux64.tar.gz",
+      "sha256": "a5f205466b976ea9b345957fc133eeea9021e71aeffc99243ec7b9e99b1d6ed5"
     },
     "codeql-bundle-osx64.tar.gz": {
-      "url": "https://github.com/github/codeql-action/releases/download/codeql-bundle-v2.27.4/codeql-bundle-osx64.tar.gz",
-      "sha256": "cfdf539260af57a18b50e56909ed94721844a99b195a1e492a9d901aae2899e5"
+      "url": "https://github.com/github/codeql-action/releases/download/codeql-bundle-v2.27.5/codeql-bundle-osx64.tar.gz",
+      "sha256": "e38052be1724adc048e28462b9792584278442c628fe0b94614e91daf705251c"
     },
     "codeql-bundle-win64.tar.gz": {
-      "url": "https://github.com/github/codeql-action/releases/download/codeql-bundle-v2.27.4/codeql-bundle-win64.tar.gz",
-      "sha256": "d67fead75936c55a241d26c25342747b07f94664b104f719dfe291b665508c4d"
+      "url": "https://github.com/github/codeql-action/releases/download/codeql-bundle-v2.27.5/codeql-bundle-win64.tar.gz",
+      "sha256": "6d0befdb4a1d60906b05610e16ac9d00b3d083ab885bb005d934a3a43fae69b4"
     }
   }
 }

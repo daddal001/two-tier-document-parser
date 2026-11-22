@@ -22,7 +22,7 @@ def fake_parse(pdf_bytes, filename):
             "backend": "pipeline",
             "gpu_used": main.GPU_AVAILABLE,
             "accuracy_tier": "high",
-            "version": "4.0.12",
+            "version": "4.2.3",
             "filename": filename,
         },
     }

@@ -14,7 +14,7 @@ measure your corpus and hardware before setting capacity or timeout budgets.
     - GPU available → VLM backend (95%+ accuracy)
     - No GPU → Pipeline backend (80-85% accuracy, CPU-only)
   - **No configuration changes needed** - detection is automatic
-- Python 3.8+ (for Jupyter notebook)
+- Python 3.12 or newer (only for local development outside Docker)
 - At least 8GB RAM (16GB recommended for accurate parser)
 
 ## Quick Start
@@ -386,7 +386,7 @@ The notebook will:
 ### Service: fast-parser
 
 - **Port**: 8004
-- **Base Image**: python:3.13-slim
+- **Base Image**: python:3.14-slim
 - **CPU**: 4 cores
 - **Memory**: 2-4GB
 - **No-GIL Mode**: Enabled for true thread parallelism

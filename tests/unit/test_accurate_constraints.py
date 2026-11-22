@@ -12,15 +12,15 @@ CONSTRAINTS = ROOT / "deploy" / "constraints" / "accurate-cpu.txt"
 MINERU_PYPROJECT = ROOT / "MinerU" / "pyproject.toml"
 IMAGE_EXTRAS = ("telemetry", "telemetry-sdk")  # what Dockerfile.accurate.cpu installs
 
-# What the CPU image runs on: Debian-based Python 3.12 on either CPU architecture.
+# What the CPU image runs on: Debian-based Python 3.14 on either CPU architecture.
 ENVIRONMENTS = [
     {
         "sys_platform": "linux",
         "platform_system": "Linux",
         "os_name": "posix",
         "platform_machine": machine,
-        "python_version": "3.12",
-        "python_full_version": "3.12.0",
+        "python_version": "3.14",
+        "python_full_version": "3.14.0",
         "implementation_name": "cpython",
         "platform_python_implementation": "CPython",
         "extra": "",

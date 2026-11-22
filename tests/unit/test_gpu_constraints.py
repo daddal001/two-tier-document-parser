@@ -46,12 +46,28 @@ BASE = ROOT / "deploy/constraints/vllm-base.txt"
 # image on versions vLLM was never run with.
 INTENTIONAL_CHANGES = {
     "pillow": "security: the base's 12.x has published advisories, 13.0.0 fixes them",
-    "transformers": "MinerU 4.0.12 needs >=5.10.1",
+    "transformers": "MinerU 4 needs >=5.10.1",
     "tokenizers": "required by the newer transformers",
     "safetensors": "required by the newer transformers",
     "urllib3": "the service imports it directly and sets a security floor (pyproject.toml)",
     "starlette": "required by the newer web-UI and API dependencies MinerU installs",
     "prometheus-fastapi-instrumentator": "required with the newer starlette",
+    "modelscope": "MinerU 4.2 needs >=1.39.1",
+    "openai": "MinerU 4.2 needs <3; the base ships 3.x, and vLLM accepts >=2.25",
+    **{
+        name: "vLLM 0.34.0 requires >=1.45.1, but its base image ships 1.40.0 (the base's own "
+        "pip check fails on it); the pins follow vLLM, and the tracing extras need the same line"
+        for name in (
+            "opentelemetry-api",
+            "opentelemetry-sdk",
+            "opentelemetry-proto",
+            "opentelemetry-semantic-conventions",
+            "opentelemetry-exporter-otlp",
+            "opentelemetry-exporter-otlp-proto-common",
+            "opentelemetry-exporter-otlp-proto-grpc",
+            "opentelemetry-exporter-otlp-proto-http",
+        )
+    },
 }
 
 

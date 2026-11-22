@@ -1,8 +1,11 @@
-# MinerU 4 GPU runtime. The base image supplies the vLLM/CUDA stack expected by
-# the pinned MinerU submodule; CPU-only deployments use Dockerfile.accurate.cpu.
-FROM vllm/vllm-openai:v0.21.0
-# For hosts using CUDA 12.9, replace the line above with:
-# FROM vllm/vllm-openai:v0.21.0-cu129
+# MinerU 4 GPU runtime. The base image supplies the vLLM/CUDA stack; CPU-only deployments use
+# Dockerfile.accurate.cpu. MinerU 4.2.3 declares vLLM >=0.19.1,<0.31.0, and this image runs
+# v0.34.0 (the newest, with no published advisories), which MinerU has not declared support for:
+# the installs below use --no-deps, so nothing enforces that range. The T4 notebook
+# (examples/notebooks/accurate_t4_check.ipynb) is the check that it works.
+FROM vllm/vllm-openai:v0.34.0
+# vLLM publishes no CUDA 12.9 image for v0.34.0 (the last tag with one is v0.32.0-cu129, which
+# would need its own constraint files).
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     fonts-noto-core fonts-noto-cjk fontconfig libgl1 \

@@ -31,9 +31,11 @@ def install_downloader(monkeypatch, *, with_api=True, with_snapshot=True):
     if with_api:
 
         class HfApi:
-            def list_repo_files(self, repo_id, **kwargs):
+            # MinerU 4.2 lists a repository's files and picks the revision it downloads from
+            # this one call (``info.sha``), so the revision asked for must come back as the sha.
+            def model_info(self, repo_id, **kwargs):
                 calls.files.append((repo_id, kwargs))
-                return ["file.onnx"]
+                return types.SimpleNamespace(sha=kwargs.get("revision", "newest"), siblings=[])
 
         module.HfApi = HfApi
 
@@ -91,13 +93,14 @@ def test_downloads_of_a_pinned_repository_request_that_revision(monkeypatch):
     ]
 
 
-def test_the_expected_file_list_comes_from_the_pinned_revision_too(monkeypatch):
+def test_the_expected_file_list_and_download_revision_come_from_the_pin_too(monkeypatch):
     module, calls = install_downloader(monkeypatch)
     prepare_models.pin_huggingface_downloads({PINNED: "b" * 40})
 
-    assert module.HfApi().list_repo_files(PINNED) == ["file.onnx"]
+    info = module.HfApi().model_info(PINNED, files_metadata=True)
 
-    assert calls.files == [(PINNED, {"revision": "b" * 40})]
+    assert info.sha == "b" * 40  # MinerU downloads info.sha, so this is the revision it fetches
+    assert calls.files == [(PINNED, {"files_metadata": True, "revision": "b" * 40})]
 
 
 def test_a_repository_without_a_pin_is_refused_with_the_fix(monkeypatch):
@@ -107,7 +110,7 @@ def test_a_repository_without_a_pin_is_refused_with_the_fix(monkeypatch):
     with pytest.raises(RuntimeError, match=f"{OTHER}.*pin_model_revisions"):
         module.hf_snapshot_download(OTHER, local_dir="/models/y")
     with pytest.raises(RuntimeError, match=OTHER):
-        module.HfApi().list_repo_files(OTHER)
+        module.HfApi().model_info(OTHER)
     assert calls.snapshot == [] and calls.files == []  # nothing reached Hugging Face
 
 
@@ -145,7 +148,9 @@ def test_main_pins_the_downloads_before_any_repository_is_ensured(monkeypatch):
     registry.model_repos_for_tier = lambda tier: [Repo()]
     module.verify_model_repo = lambda repo: types.SimpleNamespace(ready=True, missing_paths=[])
     monkeypatch.setitem(sys.modules, "mineru.model.registry", registry)
-    monkeypatch.setitem(sys.modules, "mineru.config", types.SimpleNamespace(config=config))
+    monkeypatch.setitem(
+        sys.modules, "mineru.config", types.SimpleNamespace(get_config=lambda: config)
+    )
     monkeypatch.setenv("MINERU_DOWNLOAD_MODELS", "pipeline")
     monkeypatch.delenv("MINERU_MODEL_SOURCE", raising=False)
     monkeypatch.delenv("MINERU_MODEL_REVISIONS", raising=False)
@@ -204,7 +209,9 @@ def run_main_with(monkeypatch, repo, pinned="a" * 40, allow_unpinned=False):
         ready=True, missing_paths=[]
     )
     monkeypatch.setitem(sys.modules, "mineru.model.registry", registry)
-    monkeypatch.setitem(sys.modules, "mineru.config", types.SimpleNamespace(config=config))
+    monkeypatch.setitem(
+        sys.modules, "mineru.config", types.SimpleNamespace(get_config=lambda: config)
+    )
     monkeypatch.setattr(prepare_models, "load_revisions", lambda: {PINNED: pinned})
     monkeypatch.setattr(prepare_models, "_gpu_available", lambda: False)
     monkeypatch.setenv("MINERU_DOWNLOAD_MODELS", "pipeline")

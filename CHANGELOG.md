@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Runtime and dependencies
+
+- The fast image and the CPU accurate image run on Python 3.14 (they were on 3.12). The package
+  supports Python 3.12 to 3.14 (`requires-python >=3.12,<3.15`; 3.11 is no longer supported);
+  CI runs 3.12 and 3.14. The CUDA image keeps the Python of its vLLM base image, which is 3.12.
+- Worker recycling no longer strands queued work on the fast image. Python 3.12 can retire a
+  recycled pool worker without starting a replacement (CPython issue 115634, fixed in 3.13 and
+  later), so a request queued behind it waited until another request arrived; one took 193 s
+  although its parse took 8 s. A regression test covers it on 3.13 and later.
+- MinerU is updated from 4.0.12 to 4.2.3. `prepare_models` reads the configuration through
+  `get_config()` and pins the model revision through `HfApi.model_info`, which is where
+  MinerU 4.2 now takes the file list and the revision from. The model repositories and their
+  recorded commits are unchanged. The `docvortex<0.6.8` limit in
+  `deploy/constraints/mineru-compat.txt` is removed, because MinerU 4.2.3 requires
+  `docvortex>=0.6.24,<0.7` itself.
+- The CUDA image uses vLLM 0.34.0 (it was 0.21.0), which brings torch 2.14.0 and a newer set of
+  base packages; its pinned dependencies are recompiled from it. The pins that had published
+  advisories fell from 16 packages (145 advisories) to one (`setuptools`, see
+  `deploy/constraints/accurate-gpu.in`). MinerU 4.2.3 declares vLLM `<0.31.0`, so this
+  combination is outside what MinerU has declared; the T4 notebook is the check that it works.
+  `openai` is held below 3 because MinerU requires it. No CUDA 12.9 image exists for 0.34.0.
+- Locked dependencies are refreshed. The PyMuPDF family stays below 2: `pymupdf4llm` 2.1 wraps
+  text it reads inside pictures in `<!-- Start of picture text -->` blocks, which changes the
+  Markdown callers receive (64 lines on the sample paper). Move to 2 deliberately, after the
+  consumers of the Markdown have agreed.
+
 ### Fast parser: changes callers can observe
 
 - `metadata.version` reports the installed `pymupdf4llm` version instead of a fixed `0.2.0`.
