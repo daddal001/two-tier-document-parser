@@ -52,11 +52,31 @@ def test_every_job_has_a_timeout(path):
         assert "timeout-minutes" in job, f"{path.name}: job {name} can run for six hours"
 
 
-def test_scheduled_scans_exist_for_dependencies_code_and_images():
+def test_scheduled_scans_exist_for_dependencies_and_code():
     security = load(ROOT / ".github" / "workflows" / "security.yml")
 
-    assert set(security["jobs"]) == {"dependencies", "code", "fast-image"}
+    assert set(security["jobs"]) == {"dependencies", "code"}
     assert "schedule" in security[True]  # YAML reads the key "on" as True
+
+
+def test_trivy_and_osv_are_not_run_in_github_actions():
+    # They are tests (tests/security) that run with the rest of the suite, not workflow jobs.
+    for path in WORKFLOWS:
+        for job in load(path)["jobs"].values():
+            for step in job.get("steps", []):
+                text = f"{step.get('uses', '')} {step.get('run', '')}".lower()
+                assert "trivy" not in text and "osv-scanner" not in text, path.name
+                assert "tests/security" not in text, path.name
+
+
+def test_the_vulnerability_scans_are_left_out_of_pre_commit():
+    # A newly published advisory can fail them without any change here, so they must not stand
+    # between a developer and a commit.
+    config = yaml.safe_load((ROOT / ".pre-commit-config.yaml").read_text())
+    hooks = {hook["id"]: hook for repo in config["repos"] for hook in repo["hooks"]}
+
+    assert not [name for name in hooks if "trivy" in name or "osv" in name]
+    assert "not security" in hooks["pytest"]["entry"]
 
 
 def test_a_failed_audit_does_not_hide_the_next_one():

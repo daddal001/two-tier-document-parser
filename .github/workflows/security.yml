@@ -1,8 +1,10 @@
 name: Security
 
-# Scans that need the network or a built image, so they run weekly and when something that
-# reaches the images changes rather than on every push. Each job reports in its own run; none
-# is a required check, so a newly published advisory never blocks an unrelated change.
+# Scans that need the network, so they run weekly and when something that feeds the dependencies
+# or the code changes rather than on every push. Each job reports in its own run; none is a
+# required check, so a newly published advisory never blocks an unrelated change. The Trivy and
+# OSV scans of the images and the pinned files are not run here: they are tests (tests/security)
+# that run with the rest of the suite.
 on:
   schedule:
     - cron: '17 5 * * 1'
@@ -73,20 +75,3 @@ jobs:
           --config p/python --config p/fastapi --config p/dockerfile
           --config p/github-actions --config p/secrets
           src deploy .github scripts
-
-  fast-image:
-    # Vulnerabilities in the operating system and Python packages of the image that is deployed.
-    # Findings without a published fix are not reported, since nothing can be done about them yet.
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Build the fast image
-        run: docker build --pull -f deploy/Dockerfile.fast -t fast-parser:scan .
-      - name: Scan it
-        run: >
-          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock
-          aquasec/trivy:0.76.1 image --scanners vuln --severity HIGH,CRITICAL
-          --ignore-unfixed --exit-code 1 fast-parser:scan

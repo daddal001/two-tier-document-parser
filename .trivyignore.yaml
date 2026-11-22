@@ -1,0 +1,9 @@
+# Findings the Trivy scans (pytest -m security) accept on purpose. Every entry needs a
+# statement saying why and an expired_at date, so an exception is revisited instead of
+# forgotten; tests/security/test_trivy.py fails on an entry without them or past its date.
+#
+# vulnerabilities:
+#   - id: CVE-0000-00000
+#     statement: Why it does not apply here, and what would remove it.
+#     expired_at: 2027-01-31
+vulnerabilities: []

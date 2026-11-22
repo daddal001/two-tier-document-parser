@@ -67,6 +67,13 @@ pip install -e '.[fast,telemetry,dev]'
 # Run unit tests
 make test-unit
 
+# Vulnerability scans (Trivy on the files and the images, OSV on the pinned files) are part
+# of `make test`; they need Docker and a network. Pre-commit and GitHub Actions leave them
+# out, because a newly published advisory can fail them without any change here. Run only
+# them with `make test-security`. A finding that has to be accepted goes in .trivyignore.yaml
+# or osv-scanner.toml, with a reason and an expiry date.
+make test-security
+
 # Format code
 make format
 

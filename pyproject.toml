@@ -157,6 +157,7 @@ markers = [
     "slow: Slow tests",
     "models: Requires the pinned MinerU, native dependencies and downloaded models",
     "container: Builds and runs the fast image; needs a Docker daemon (run with -m container)",
+    "security: Trivy and OSV scans of the repository files, the pinned sets and the images; needs Docker and a network (included in a normal run; pre-commit and CI leave them out)",
 ]
 
 [tool.coverage.run]

@@ -1,0 +1,21 @@
+# Advisories the OSV scans (pytest -m security) accept on purpose. Every entry needs a reason and
+# an ignoreUntil date, so an exception is revisited instead of forgotten: after the date the
+# advisory counts again, and tests/security/test_osv.py fails on an entry without a reason.
+
+# setuptools in the CUDA image: vLLM 0.34.0 requires setuptools<81, and these advisories are
+# fixed in 83.0.0 and 84.1.0. They concern building source distributions and legacy wheel
+# installs on Windows, which this Linux runtime image does not do. Remove when vLLM allows 83+.
+[[IgnoredVulns]]
+id = "GHSA-h35f-9h28-mq5c"
+ignoreUntil = 2027-01-31
+reason = "setuptools<81 is required by vLLM 0.34.0; sdist build issue, not used at runtime"
+
+[[IgnoredVulns]]
+id = "PYSEC-2026-3447"
+ignoreUntil = 2027-01-31
+reason = "same advisory as GHSA-h35f-9h28-mq5c (setuptools<81 is required by vLLM 0.34.0)"
+
+[[IgnoredVulns]]
+id = "GHSA-xmj3-9gf7-h52w"
+ignoreUntil = 2027-01-31
+reason = "setuptools<81 is required by vLLM 0.34.0; affects Windows legacy wheel installs only"

@@ -1,4 +1,4 @@
-.PHONY: help install dev build build-accurate up down logs clean clean-volumes test test-unit test-integration test-container test-coverage constraints constraints-gpu lint format type-check coverage check hooks
+.PHONY: help install dev build build-accurate up down logs clean clean-volumes test test-unit test-integration test-container test-security test-coverage constraints constraints-gpu lint format type-check coverage check hooks
 
 .DEFAULT_GOAL := help
 
@@ -49,6 +49,15 @@ constraints:
 
 test-container:
 	pytest tests/container -v -m "container and not models"
+
+# Only the Trivy (repository files and images) and OSV (pinned files) scans; `make test` includes
+# them too. Pre-commit and GitHub Actions leave them out: a newly published advisory can fail
+# them without any change here.
+test-security:
+	pytest tests/security -v -m security
+
+constraints-gpu:
+	python scripts/compile_gpu_constraints.py
 
 test-coverage:
 	pytest tests/ -m "not integration and not models and not container" --cov=src/two_tier_parser --cov-branch --cov-report=html --cov-report=term

@@ -28,6 +28,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `deploy/constraints/accurate-gpu.in`). MinerU 4.2.3 declares vLLM `<0.31.0`, so this
   combination is outside what MinerU has declared; the T4 notebook is the check that it works.
   `openai` is held below 3 because MinerU requires it. No CUDA 12.9 image exists for 0.34.0.
+- Vulnerability scans are part of the test suite (`tests/security`, also `make test-security`):
+  Trivy over the repository files and the fast and CPU images, and OSV-Scanner over `uv.lock` and
+  the two image pin sets. They need Docker and a network, so the pre-commit test hook leaves
+  them out and GitHub Actions does not run them (the Trivy job that scanned the fast image in
+  `security.yml` is removed). Accepted findings live in `.trivyignore.yaml` and
+  `osv-scanner.toml`, each with a reason and an expiry date. The first run found, and this
+  change fixes, a fixable HIGH advisory in Debian's `zlib1g` in both images and five in the
+  libraries bundled with pip in the CPU image: the CPU image no longer ships pip, setuptools or
+  wheel (the fast image already did not).
 - Locked dependencies are refreshed. The PyMuPDF family stays below 2: `pymupdf4llm` 2.1 wraps
   text it reads inside pictures in `<!-- Start of picture text -->` blocks, which changes the
   Markdown callers receive (64 lines on the sample paper). Move to 2 deliberately, after the
