@@ -19,8 +19,10 @@ updates:
       # the supported minor still arrive.
       - dependency-name: python
         update-types: [version-update:semver-major, version-update:semver-minor]
-      # The GPU base image is chosen to match the pinned MinerU release, and it can only be
-      # validated on a GPU host. Move it by hand together with the MinerU pin.
+      # The CUDA base image is vLLM's, and it can only be validated on a GPU host. A newer
+      # release can break MinerU's vision-language model (0.34.0 removed a module that
+      # mineru-vl-utils imports), so it moves by hand, with a T4 run and recompiled pins
+      # (scripts/compile_gpu_constraints.py), together with the MinerU pin.
       - dependency-name: vllm/vllm-openai
   - package-ecosystem: github-actions
     directory: /
