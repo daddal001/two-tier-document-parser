@@ -23,6 +23,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 OUTPUT = ROOT / "deploy/constraints/accurate-gpu.txt"
 BASE_FREEZE = ROOT / "deploy/constraints/vllm-base.txt"
+BASE_NATIVE = ROOT / "deploy/constraints/vllm-base-native.txt"
 DOCKERFILE = ROOT / "deploy/Dockerfile.accurate"
 # These distributions are supplied by the vLLM image, including its CUDA-specific wheel builds.
 # A version with a local tag (+cu130) is one of those builds, such as torchcodec, which vLLM
@@ -30,6 +31,11 @@ DOCKERFILE = ROOT / "deploy/Dockerfile.accurate"
 BASE_PACKAGES = re.compile(
     r"^(torch|torchvision|torchaudio|triton|vllm)==|^(nvidia-|cuda-)|^[A-Za-z0-9_.-]+==[^\s;]*\+"
 )
+
+
+def _name(requirement: str) -> str:
+    """The normalized distribution name of a pinned requirement line."""
+    return re.match(r"[A-Za-z0-9_.-]+", requirement)[0].lower().replace("_", "-")
 
 
 def refresh_base() -> None:
@@ -41,10 +47,21 @@ def refresh_base() -> None:
         capture_output=True,
         text=True,
     ).stdout
-    lines = sorted(
-        line
-        for line in frozen.splitlines()
-        if "==" in line and "@" not in line and not BASE_PACKAGES.match(line)
+    candidates = [line for line in frozen.splitlines() if "==" in line and "@" not in line]
+    lines = sorted(line for line in candidates if not BASE_PACKAGES.match(line))
+    direct = [line for line in frozen.splitlines() if " @ " in line]  # installed from a local wheel
+    owned = sorted(
+        {_name(line) for line in candidates if BASE_PACKAGES.match(line)}
+        | {_name(line) for line in direct}
+    )
+    BASE_NATIVE.write_text(
+        f"# Packages the base image {tag} owns: its native stack and the CUDA builds it ships.\n"
+        "# The pins never name them, at any version: the Dockerfile freezes the base's own, and a\n"
+        "# pin the resolver chose can contradict that freeze (torchcodec 0.17.0 against the\n"
+        "# base's 0.16.0+cu130) and fail the build.\n"
+        "# Regenerate with: python scripts/compile_gpu_constraints.py --refresh-base\n"
+        + "\n".join(owned)
+        + "\n"
     )
     BASE_FREEZE.write_text(
         f"# Python packages of {tag} (linux/arm64 image; the pure-Python versions match amd64),\n"
@@ -58,6 +75,11 @@ def refresh_base() -> None:
 def compile_pins() -> None:
     """Resolve for each architecture starting from the base versions, then merge the results."""
     pins: dict[str, set[str]] = {}
+    owned = {
+        line.strip()
+        for line in BASE_NATIVE.read_text().splitlines()
+        if line.strip() and not line.startswith("#")
+    }
     with tempfile.TemporaryDirectory(prefix="gpu-constraints-") as directory:
         for architecture in ("x86_64", "aarch64"):
             compiled = Path(directory) / f"{architecture}.txt"
@@ -91,7 +113,8 @@ def compile_pins() -> None:
             )
             for line in compiled.read_text().splitlines():
                 if line and not line.lstrip().startswith("#") and not BASE_PACKAGES.match(line):
-                    pins.setdefault(line, set()).add(architecture)
+                    if _name(line) not in owned:
+                        pins.setdefault(line, set()).add(architecture)
     lines = []
     for requirement, architectures in sorted(pins.items()):
         if len(architectures) == 1:

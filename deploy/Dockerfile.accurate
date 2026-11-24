@@ -1,13 +1,14 @@
 # MinerU 4 GPU runtime. The base image supplies the vLLM/CUDA stack; CPU-only deployments use
-# Dockerfile.accurate.cpu. MinerU 4.2.3 declares vLLM >=0.19.1,<0.31.0, and this image runs
-# v0.32.0, the first release past that cap with no published advisories (0.30.0 has 21, 0.31.0
-# has 16). The installs below use --no-deps, so nothing enforces the range; the T4 notebook
-# (examples/notebooks/accurate_t4_check.ipynb) is the check that it works. Do not move to
-# v0.34.0 or later without that check: they removed vllm.v1.sample.logits_processor, which
-# mineru-vl-utils imports, and the VLM then fails to load ("Please install vllm>=0.19.1,<0.31.0").
-FROM vllm/vllm-openai:v0.32.0
+# Dockerfile.accurate.cpu. MinerU 4.2.3 and mineru-vl-utils 2.0.9 declare vLLM >=0.19.1,<0.31.0,
+# and this image runs v0.30.0, the newest release inside that range. Newer ones failed on a
+# Colab T4: 0.34.0 removed vllm.v1.sample.logits_processor, which mineru-vl-utils imports, and
+# 0.32.0 checks custom logits processors against a new base class (its model runner V2) that
+# mineru-vl-utils does not subclass. In 0.30.0 a custom logits processor makes vLLM use the V1
+# model runner, which is the one MinerU is written for. Do not move past 0.30.x without a T4
+# run, MinerU's own range moving, and recompiled pins (scripts/compile_gpu_constraints.py).
+FROM vllm/vllm-openai:v0.30.0
 # For hosts using CUDA 12.9, replace the line above with:
-# FROM vllm/vllm-openai:v0.32.0-cu129
+# FROM vllm/vllm-openai:v0.30.0-cu129
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     fonts-noto-core fonts-noto-cjk fontconfig libgl1 \

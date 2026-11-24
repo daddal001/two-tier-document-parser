@@ -22,19 +22,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   recorded commits are unchanged. The `docvortex<0.6.8` limit in
   `deploy/constraints/mineru-compat.txt` is removed, because MinerU 4.2.3 requires
   `docvortex>=0.6.24,<0.7` itself.
-- The CUDA image uses vLLM 0.32.0 (it was 0.21.0), with torch 2.13.0; its pinned dependencies are
-  recompiled from that base. MinerU 4.2.3 declares vLLM `<0.31.0`, so this is outside what
-  MinerU has declared; 0.32.0 is the first release past that cap with no published advisories
-  (0.30.0 has 21, 0.31.0 has 16). Do not move to 0.34.0 or later without a T4 run: they removed
-  `vllm.v1.sample.logits_processor`, which `mineru-vl-utils` imports, and the vision-language
-  model then fails to load (found on a Colab T4). Every `vllm` import in MinerU,
-  `mineru-vl-utils` and this service was checked to resolve in the 0.32.0 image; the engine
-  itself can only be checked on a GPU. The pins that had published advisories fell from 16
-  packages (145 advisories) to one (`setuptools`, which vLLM caps below 81; see
-  `deploy/constraints/accurate-gpu.in`): security floors lift `certifi` (a critical advisory
-  about compromised root certificates), `dnspython` and OpenTelemetry above the base's releases.
-  `openai` is held below 3 because MinerU requires it. A CUDA 12.9 host can use the
-  `v0.32.0-cu129` base tag (the last release with one).
+- The CUDA image uses vLLM 0.30.0 (it was 0.21.0), with torch 2.13.0, the newest release inside
+  the range MinerU 4.2.3 and `mineru-vl-utils` 2.0.9 declare (`>=0.19.1,<0.31.0`). Two newer
+  releases failed on a Colab T4: 0.34.0 removed `vllm.v1.sample.logits_processor`, which
+  `mineru-vl-utils` imports, and 0.32.0 checks custom logits processors against a base class
+  (its model runner V2) that `mineru-vl-utils` does not subclass. In 0.30.0 a custom logits
+  processor makes vLLM use the V1 model runner, the one MinerU is written for. Move past 0.30.x
+  only with a T4 run and recompiled pins. In the real 0.30.0 image on a CPU host, every `vllm`
+  import made by MinerU, `mineru-vl-utils` and this service resolves, vLLM's own validator
+  accepts MinerU's logits processor, and the pinned set installs with the Dockerfile's steps;
+  the engine itself can only be checked on a GPU.
+- vLLM 0.30.0 has 21 published advisories (fixed in 0.31.0 and 0.32.0). By their titles they
+  concern vLLM's HTTP server (CORS, chat templates, the Responses API), request parameters,
+  and model-specific or distributed features. This image never starts vLLM's server: its
+  entrypoint is this service, and MinerU runs the engine in-process. They were read by title,
+  not individually audited against that use.
+- The CUDA pins were recompiled from the 0.30.0 base. The base's older releases carried
+  advisories, so security floors lift `certifi` (a critical advisory about compromised root
+  certificates), `aiohttp`, `filelock`, `pyjwt`, `dnspython` and OpenTelemetry; the only
+  pinned package left with an advisory is `setuptools`, which vLLM caps below 81 (see
+  `deploy/constraints/accurate-gpu.in`). `pip check` then also reports two base packages this
+  service does not use (`lmcache` and the Prometheus exporter ask for the OpenTelemetry 1.40
+  line). Packages the base owns (its native stack, `torchcodec` and other CUDA builds) are listed
+  in `deploy/constraints/vllm-base-native.txt` and never pinned: the Dockerfile freezes the
+  base's own, and a pin the resolver chose (`torchcodec` 0.17.0 against the base's
+  0.16.0+cu130) failed the install. `openai` is held below 3 because MinerU requires it. A CUDA
+  12.9 host can use the `v0.30.0-cu129` base tag.
 - Vulnerability scans are part of the test suite (`tests/security`, also `make test-security`):
   Trivy over the repository files and the fast and CPU images, and OSV-Scanner over `uv.lock` and
   the two image pin sets. They need Docker and a network, so the pre-commit test hook leaves

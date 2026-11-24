@@ -1,0 +1,47 @@
+# Packages the base image vllm/vllm-openai:v0.30.0 owns: its native stack and the CUDA builds it ships.
+# The pins never name them, at any version: the Dockerfile freezes the base's own, and a
+# pin the resolver chose can contradict that freeze (torchcodec 0.17.0 against the
+# base's 0.16.0+cu130) and fail the build.
+# Regenerate with: python scripts/compile_gpu_constraints.py --refresh-base
+cuda-bindings
+cuda-core
+cuda-pathfinder
+cuda-python
+cuda-tile
+cuda-toolkit
+deep-ep
+flashinfer-jit-cache
+nvidia-cublas
+nvidia-cuda-cccl
+nvidia-cuda-crt
+nvidia-cuda-cupti
+nvidia-cuda-nvcc
+nvidia-cuda-nvdisasm
+nvidia-cuda-nvrtc
+nvidia-cuda-runtime
+nvidia-cudnn-cu13
+nvidia-cudnn-frontend
+nvidia-cufft
+nvidia-cufile
+nvidia-curand
+nvidia-cusolver
+nvidia-cusparse
+nvidia-cusparselt-cu13
+nvidia-cutlass-dsl
+nvidia-cutlass-dsl-libs-base
+nvidia-cutlass-dsl-libs-core
+nvidia-cutlass-dsl-libs-cu12
+nvidia-cutlass-dsl-libs-cu13
+nvidia-ml-py
+nvidia-nccl-cu13
+nvidia-nvjitlink
+nvidia-nvshmem-cu13
+nvidia-nvtx
+nvidia-nvvm
+python-apt
+torch
+torchaudio
+torchcodec
+torchvision
+triton
+vllm

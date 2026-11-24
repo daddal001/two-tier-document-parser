@@ -47,8 +47,12 @@ BASE = ROOT / "deploy/constraints/vllm-base.txt"
 INTENTIONAL_CHANGES = {
     "modelscope": "MinerU 4.2 needs >=1.39.1",
     "openai": "MinerU 4.2 needs <3; the base ships 3.x, and vLLM accepts >=2.25",
+    "pillow": "security: the base's 12.x has published advisories, 13.0.0 fixes them",
     "certifi": "security: the base's 2026.7.22 bundles compromised root certificates; fixed in 2026.10.18",
-    "dnspython": "security: the base's 2.9.0 has a denial-of-service advisory; fixed in 2.9.2",
+    "dnspython": "security: the base's 2.8.0 has a denial-of-service advisory; fixed in 2.9.2",
+    "aiohttp": "security: the base's 3.14.3 has eleven high-severity advisories; fixed in 3.14.4",
+    "filelock": "security: the base's 4.0.1 has published advisories; fixed in 4.2.1",
+    "pyjwt": "security: the base's 2.14.0 has published advisories; fixed in 2.15.0",
     **{
         name: "security floor: the base's 1.40 line has denial-of-service advisories (fixed in "
         "1.45.2), and the rest of OpenTelemetry has to move to the same release line with it"
@@ -57,9 +61,7 @@ INTENTIONAL_CHANGES = {
             "opentelemetry-sdk",
             "opentelemetry-proto",
             "opentelemetry-semantic-conventions",
-            "opentelemetry-exporter-http-transport",
             "opentelemetry-exporter-otlp",
-            "opentelemetry-exporter-otlp-common",
             "opentelemetry-exporter-otlp-proto-common",
             "opentelemetry-exporter-otlp-proto-grpc",
             "opentelemetry-exporter-otlp-proto-http",
@@ -126,3 +128,22 @@ def test_the_image_freezes_every_package_the_base_built_for_cuda():
         assert re.search(freeze, line), f"{line} is not frozen by the Dockerfile"
     for line in ("numpy==2.2.6", "fastapi==0.136.3"):
         assert not re.search(freeze, line), f"{line} should stay installable by the pins"
+
+
+NATIVE = ROOT / "deploy/constraints/vllm-base-native.txt"
+
+
+def native_names():
+    lines = [line.strip() for line in NATIVE.read_text().splitlines()]
+    return {line for line in lines if line and not line.startswith("#")}
+
+
+def test_the_pins_name_no_package_the_base_image_owns():
+    # The Dockerfile freezes the base's native stack and its CUDA builds. A pin for one of them,
+    # at whatever version the resolver picked, can contradict that freeze and fail the build
+    # (the 0.30.0 base ships torchcodec 0.16.0+cu130; the resolver chose 0.17.0).
+    owned = native_names()
+
+    assert {"torch", "vllm"} <= owned, "the native list should name torch and vllm"
+    named = sorted(owned & set(read_pins(PINS)))
+    assert not named, f"pinned although the base image owns them: {named}"
